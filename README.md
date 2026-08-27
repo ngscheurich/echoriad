@@ -45,12 +45,7 @@ Image: default
 
 ## Configuration
 
-Per-project configuration is read from one of (checked in order):
-
-- `.echoriad.json`
-- `.echoriad/config.json`
-
-If **both** are present, the extension errors out rather than guessing which wins.
+Per-project configuration is read from `.echoriad.json` in the project root.
 
 ### Example
 
