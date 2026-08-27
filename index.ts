@@ -493,6 +493,7 @@ type ProjectConfig = {
   cpus?: number;
   memory?: string;
   network?: ProjectNetworkConfig;
+  mounts?: Record<string, string>;
 };
 
 const CONFIG_PATHS = [".echoriad.json", ".echoriad/config.json"];
@@ -535,6 +536,23 @@ function loadProjectConfig(projectRoot: string): ProjectConfig {
     );
   }
   return parsed as ProjectConfig;
+}
+
+function resolveMounts(
+  projectRoot: string,
+): Record<string, RealFSProvider> {
+  const config = loadProjectConfig(projectRoot);
+  const mounts: Record<string, RealFSProvider> = {
+    [GUEST_WORKSPACE]: new RealFSProvider(projectRoot),
+  };
+  if (config.mounts) {
+    for (const [guestPath, hostRelative] of Object.entries(config.mounts)) {
+      const hostPath = path.resolve(projectRoot, hostRelative);
+      fs.mkdirSync(hostPath, { recursive: true });
+      mounts[guestPath] = new RealFSProvider(hostPath);
+    }
+  }
+  return mounts;
 }
 
 function resolveVmOptions(projectRoot: string): {
@@ -583,7 +601,7 @@ function resolveVmOptions(projectRoot: string): {
   const options: VMOptions = {
     sessionLabel: `pi ${path.basename(projectRoot)}`,
     sandbox,
-    vfs: { mounts: { [GUEST_WORKSPACE]: new RealFSProvider(projectRoot) } },
+    vfs: { mounts: resolveMounts(projectRoot) },
   };
 
   if (network.enabled === false) {
