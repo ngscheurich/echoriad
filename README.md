@@ -2,7 +2,7 @@
 
 > Alae! Ered en Echoriath, ered e·mbar nín!
 
-Runs [pi]'s built-in file and shell tools inside a local [Gondolin] micro-VM so that everything the agent reads, writes, edits, lists, finds, greps, and shells into executes in an isolated Linux guest instead of directly on your host.
+Runs [Pi]'s built-in file and shell tools inside a local [Gondolin] micro-VM so that everything the agent reads, writes, edits, lists, finds, greps, and shells into executes in an isolated Linux guest instead of directly on your host.
 
 The host working directory is mounted at `/workspace` in the guest. File changes under `/workspace` write through to the host; any other filesystem changes the agent makes stay isolated inside the VM and are discarded when the VM stops.
 
@@ -19,7 +19,7 @@ pi install git:github.com/ngscheurich/echoriad
 
 ## How it works
 
-On `session_start` the extension boots a Gondolin VM (lazily — only when the first tool needs it) and mounts the current host working directory at `/workspace` in the guest via a real-FS provider. Each pi tool is re-registered so its operations run against the guest:
+On `session_start` the extension boots a Gondolin VM (lazily — only when the first tool needs it) and mounts the current host working directory at `/workspace` in the guest via a real-FS provider. Each Pi tool is re-registered so its operations run against the guest:
 
 | Tool                      | Backing                                                            |
 | ------------------------- | ------------------------------------------------------------------ |
