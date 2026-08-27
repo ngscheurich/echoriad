@@ -23,11 +23,7 @@
  *   initramfs.cpio.lz4, rootfs.ext4). When unset, Gondolin's default
  *   (alpine-base:latest, or $GONDOLIN_DEFAULT_IMAGE) is used.
  *
- * Per-project configuration, read from one of (in order):
- *   - `.echoriad.json`
- *   - `.echoriad/config.json`
- *
- * If both are present, the extension errors out rather than guessing which wins.
+ * Per-project configuration is read from `.echoriad.json` in the project root.
  *
  * Example configuration:
  *
@@ -496,26 +492,10 @@ type ProjectConfig = {
   mounts?: Record<string, string>;
 };
 
-const CONFIG_PATHS = [".echoriad.json", ".echoriad/config.json"];
+const CONFIG_PATH = ".echoriad.json";
 
 function loadProjectConfig(projectRoot: string): ProjectConfig {
-  const found = CONFIG_PATHS.map((rel) => path.join(projectRoot, rel)).filter(
-    (p) => {
-      try {
-        fs.accessSync(p);
-        return true;
-      } catch {
-        return false;
-      }
-    },
-  );
-  if (found.length === 0) return {};
-  if (found.length > 1) {
-    throw new Error(
-      `Echoriad: multiple config files found in ${projectRoot}: ${CONFIG_PATHS.join(", ")}. Provide only one.`,
-    );
-  }
-  const configPath = found[0];
+  const configPath = path.join(projectRoot, CONFIG_PATH);
   let raw: string;
   try {
     raw = fs.readFileSync(configPath, "utf8");
