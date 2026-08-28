@@ -24,6 +24,9 @@
  *   (alpine-base:latest, or $GONDOLIN_DEFAULT_IMAGE) is used.
  *
  * Per-project configuration is read from `.echoriad.json` in the project root.
+ * System-wide defaults are read from `$XDG_CONFIG_HOME/echoriad/config.json`
+ * (defaulting to `~/.config/echoriad/config.json`); per-project fields
+ * override the system-wide file, which in turn overrides `ECHORIAD_IMAGE`.
  *
  * Example configuration:
  *
@@ -57,6 +60,7 @@
  */
 
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import {
   createHttpHooks,
@@ -494,8 +498,10 @@ type ProjectConfig = {
 
 const CONFIG_PATH = ".echoriad.json";
 
-function loadProjectConfig(projectRoot: string): ProjectConfig {
-  const configPath = path.join(projectRoot, CONFIG_PATH);
+function parseConfigFile(
+  configPath: string,
+  label: string,
+): ProjectConfig {
   let raw: string;
   try {
     raw = fs.readFileSync(configPath, "utf8");
@@ -507,15 +513,38 @@ function loadProjectConfig(projectRoot: string): ProjectConfig {
     parsed = JSON.parse(raw);
   } catch (error) {
     throw new Error(
-      `Echoriad: invalid ${path.relative(projectRoot, configPath)} in ${projectRoot}: ${(error as Error).message}`,
+      `Echoriad: invalid ${label} (${configPath}): ${(error as Error).message}`,
     );
   }
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error(
-      `Echoriad: ${path.relative(projectRoot, configPath)} must be a JSON object`,
-    );
+    throw new Error(`Echoriad: ${label} (${configPath}) must be a JSON object`);
   }
   return parsed as ProjectConfig;
+}
+
+function loadProjectConfig(projectRoot: string): ProjectConfig {
+  return parseConfigFile(
+    path.join(projectRoot, CONFIG_PATH),
+    path.relative(projectRoot, path.join(projectRoot, CONFIG_PATH)) ||
+      CONFIG_PATH,
+  );
+}
+
+// Base config directory following the XDG Base Directory Specification:
+// `$XDG_CONFIG_HOME` if set and non-absolute-path-safe, otherwise `$HOME/.config`.
+// This is the most portable default across Linux, macOS, and the BSDs.
+function configDir(): string {
+  const xdg = process.env.XDG_CONFIG_HOME;
+  if (xdg && xdg.trim() !== "" && path.isAbsolute(xdg)) return xdg;
+  return path.join(os.homedir(), ".config");
+}
+
+function systemConfigPath(): string {
+  return path.join(configDir(), "echoriad", "config.json");
+}
+
+function loadSystemConfig(): ProjectConfig {
+  return parseConfigFile(systemConfigPath(), "system config");
 }
 
 function resolveMounts(
@@ -539,8 +568,29 @@ function resolveVmOptions(projectRoot: string): {
   options: VMOptions;
   imageLabel: string;
 } {
-  const config = loadProjectConfig(projectRoot);
-  const image = config.image ?? process.env.ECHORIAD_IMAGE;
+  const project = loadProjectConfig(projectRoot);
+  const system = loadSystemConfig();
+
+  // Precedence for scalar defaults: project config > system config > env var.
+  // Relative image paths resolve against the base dir of whichever source
+  // supplied them (the directory containing the config file, or process.cwd()
+  // for the env var, matching Gondolin's own resolvePathSelector() behaviour).
+  const systemPath = systemConfigPath();
+  let image: string | undefined;
+  let imageBase: string;
+  if (project.image) {
+    image = project.image;
+    imageBase = projectRoot;
+  } else if (system.image) {
+    image = system.image;
+    imageBase = path.dirname(systemPath);
+  } else {
+    image = process.env.ECHORIAD_IMAGE;
+    imageBase = process.cwd();
+  }
+  const cpus = project.cpus ?? system.cpus;
+  const memory = project.memory ?? system.memory;
+
   const sandbox: NonNullable<VMOptions["sandbox"]> = {};
   if (image) {
     // A string imagePath can be either an image selector (`name:tag` / build id)
@@ -548,15 +598,10 @@ function resolveVmOptions(projectRoot: string): {
     // resolves directory paths against process.cwd(); if the directory is
     // missing it silently falls through to parseImageRef(), which rejects
     // path-shaped strings with a confusing "invalid image name" error.
-    // Resolve path-like selectors against the project root ourselves and
-    // surface a clear error when the directory doesn't exist.
+    // Resolve path-like selectors against the image source's base dir
+    // ourselves and surface a clear error when the directory doesn't exist.
     if (typeof image === "string" && image.startsWith(".")) {
-      // Relative directory path (e.g. `.echoriad/assets` or `./images/x`).
-      // Resolve against the project root and verify it exists, since
-      // Gondolin's resolvePathSelector() resolves against process.cwd()
-      // and silently falls through to parseImageRef() on a missing dir,
-      // producing a confusing "invalid image name" error.
-      const resolved = path.resolve(projectRoot, image);
+      const resolved = path.resolve(imageBase, image);
       let isDir = false;
       try {
         isDir = fs.statSync(resolved).isDirectory();
@@ -574,10 +619,10 @@ function resolveVmOptions(projectRoot: string): {
       sandbox.imagePath = image;
     }
   }
-  if (typeof config.cpus === "number") sandbox.cpus = config.cpus;
-  if (typeof config.memory === "string") sandbox.memory = config.memory;
+  if (typeof cpus === "number") sandbox.cpus = cpus;
+  if (typeof memory === "string") sandbox.memory = memory;
 
-  const network = config.network ?? {};
+  const network = project.network ?? {};
   const options: VMOptions = {
     sessionLabel: `pi ${path.basename(projectRoot)}`,
     sandbox,

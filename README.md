@@ -45,7 +45,26 @@ Image: default
 
 ## Configuration
 
-Per-project configuration is read from `.echoriad.json` in the project root.
+Configuration is read from two files, merged with the **project file winning** over the system file on a per-field basis:
+
+1. **System-wide**: `$XDG_CONFIG_HOME/echoriad/config.json` (defaulting to `~/.config/echoriad/config.json` when `XDG_CONFIG_HOME` is unset) — defaults applied to every project.
+2. **Per-project**: `.echoriad.json` in the project root.
+
+Both files use the same schema. `image`, `cpus`, and `memory` fall back from project config to system config to the `ECHORIAD_IMAGE` env var to Gondolin's default. `network` and `mounts` are only meaningful in the per-project file (they are inherently project-relative).
+
+### System-wide defaults
+
+`$XDG_CONFIG_HOME/echoriad/config.json` (defaulting to `~/.config/echoriad/config.json`) is read first and applies to every project. It's the natural place to pin a default image:
+
+```json
+{
+  "image": "my-base:latest",
+  "cpus": 2,
+  "memory": "2G"
+}
+```
+
+Any field set in a project's `.echoriad.json` overrides the system-wide value, so a project can still opt into a different image while inheriting the rest.
 
 ### Example
 
@@ -74,7 +93,7 @@ Per-project configuration is read from `.echoriad.json` in the project root.
 
 | Field     | Description                                                                                                                                                                                                                                 | Default                                                               |
 | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| `image`   | Guest image selector (`name:tag` or build id) or a path to a directory containing the guest assets (`vmlinuz-virt`, `initramfs.cpio.lz4`, `rootfs.ext4`). A relative path is resolved against the project root. Overrides `ECHORIAD_IMAGE`. | Gondolin default (`alpine-base:latest`, or `$GONDOLIN_DEFAULT_IMAGE`) |
+| `image`   | Guest image selector (`name:tag` or build id) or a path to a directory containing the guest assets (`vmlinuz-virt`, `initramfs.cpio.lz4`, `rootfs.ext4`). A relative path is resolved against the config file that supplied it (project root for `.echoriad.json`, the system config directory for the XDG file). Overrides `ECHORIAD_IMAGE`. | Gondolin default (`alpine-base:latest`, or `$GONDOLIN_DEFAULT_IMAGE`) |
 | `cpus`    | Number of vCPUs                                                                                                                                                                                                                             | `2`                                                                   |
 | `memory`  | VM memory, QEMU syntax (e.g. `"1G"`, `"512M"`)                                                                                                                                                                                              | `"1G"`                                                                |
 | `network` | Network policy (see below)                                                                                                                                                                                                                  | enabled, allow all HTTP/HTTPS                                         |
@@ -90,7 +109,8 @@ Per-project configuration is read from `.echoriad.json` in the project root.
 
 | Variable                 | Purpose                                                                           |
 | ------------------------ | --------------------------------------------------------------------------------- |
-| `ECHORIAD_IMAGE`         | Fallback guest image selector / asset directory when `image` is not set in config |
+| `ECHORIAD_IMAGE`         | Fallback guest image selector / asset directory when `image` is not set in either config file |
+| `XDG_CONFIG_HOME`        | Base config directory (default `$HOME/.config`); the system file is read from `$XDG_CONFIG_HOME/echoriad/config.json` |
 | `GONDOLIN_DEFAULT_IMAGE` | Overrides Gondolin's bundled default image                                        |
 
 ## Credits
