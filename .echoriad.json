@@ -1,0 +1,11 @@
+{
+  "image": ".gondolin/assets",
+  "network": {
+    "allowedHosts": [
+      "github.com",
+      "*.github.com",
+      "*.githubusercontent.com",
+      "codeload.github.com"
+    ]
+  }
+}
