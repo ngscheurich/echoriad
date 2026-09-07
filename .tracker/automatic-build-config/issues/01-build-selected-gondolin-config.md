@@ -1,6 +1,6 @@
 # Build a selected Gondolin config
 
-Status: ready-for-agent
+Status: claimed
 
 Implement the first end-to-end automatic build path from `.tracker/automatic-build-config/spec.md`.
 

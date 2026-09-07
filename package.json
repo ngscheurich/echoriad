@@ -6,7 +6,8 @@
   "scripts": {
     "clean": "echo 'nothing to clean'",
     "build": "echo 'nothing to build'",
-    "check": "echo 'nothing to check'"
+    "check": "node --check src/config.ts src/fingerprint.ts src/guest-image.ts index.ts 2>/dev/null || node -e \"import('./src/config.ts');import('./src/fingerprint.ts');import('./src/guest-image.ts')\"",
+    "test": "node --test \"test/*.test.ts\""
   },
   "pi": {
     "extensions": [

@@ -23,6 +23,15 @@
  *   initramfs.cpio.lz4, rootfs.ext4). When unset, Gondolin's default
  *   (alpine-base:latest, or $GONDOLIN_DEFAULT_IMAGE) is used.
  *
+ * Automatic guest image builds:
+ *   Instead of selecting an existing image, a configuration file may set
+ *   "buildConfig" to a Gondolin build-config path. Before building, Echoriad
+ *   fingerprints the config and its local inputs, shows a human-facing
+ *   approval prompt, then launches the bundled Gondolin CLI. A config file
+ *   may define "image" or "buildConfig", not both. A project selector
+ *   overrides both system selectors; ECHORIAD_IMAGE applies only when no
+ *   file selects a source.
+ *
  * Per-project configuration is read from `.echoriad.json` in the project root.
  * System-wide defaults are read from `$XDG_CONFIG_HOME/echoriad/config.json`
  * (defaulting to `~/.config/echoriad/config.json`); per-project fields
@@ -32,6 +41,7 @@
  *
  *   {
  *     "image": "my-custom:latest",            // optional, overrides ECHORIAD_IMAGE
+ *     "buildConfig": "build-config.json",     // optional; mutual exclusive with "image"
  *     "cpus": 4,                              // optional, default 2
  *     "memory": "2G",                         // optional, qemu syntax, default "1G"
  *     "mounts": {
@@ -88,6 +98,21 @@ import {
   VM,
   type VMOptions,
 } from "@earendil-works/gondolin";
+import {
+  loadProjectConfig,
+  loadSystemConfig,
+  resolveImageSelection,
+  type HostMountConfig,
+  type MemoryMountConfig,
+  type MountConfig,
+  type ProjectConfig,
+  type ProjectNetworkConfig,
+  type ProjectSecretConfig,
+} from "./src/config.ts";
+import {
+  GuestImageError,
+  prepareGuestImage,
+} from "./src/guest-image.ts";
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -538,91 +563,6 @@ function createEchoriadBashOps(
   };
 }
 
-type ProjectSecretConfig = {
-  hosts: string[];
-  fromEnv?: string;
-};
-
-type ProjectNetworkConfig = {
-  enabled?: boolean;
-  allowedHosts?: string[];
-  secrets?: Record<string, ProjectSecretConfig>;
-  /** guest host[:port] -> upstream host:port raw tcp mappings */
-  tcp?: Record<string, string>;
-};
-
-type HostMountConfig = {
-  type?: "host";
-  path: string;
-  readonly?: boolean;
-};
-
-type MemoryMountConfig = {
-  type: "memory";
-  readonly?: boolean;
-};
-
-type MountConfig = string | HostMountConfig | MemoryMountConfig;
-
-type ProjectConfig = {
-  image?: string;
-  cpus?: number;
-  memory?: string;
-  network?: ProjectNetworkConfig;
-  mounts?: Record<string, MountConfig>;
-};
-
-const CONFIG_PATH = ".echoriad.json";
-
-function parseConfigFile(
-  configPath: string,
-  label: string,
-): ProjectConfig {
-  let raw: string;
-  try {
-    raw = fs.readFileSync(configPath, "utf8");
-  } catch {
-    return {};
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (error) {
-    throw new Error(
-      `Echoriad: invalid ${label} (${configPath}): ${(error as Error).message}`,
-    );
-  }
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error(`Echoriad: ${label} (${configPath}) must be a JSON object`);
-  }
-  return parsed as ProjectConfig;
-}
-
-function loadProjectConfig(projectRoot: string): ProjectConfig {
-  return parseConfigFile(
-    path.join(projectRoot, CONFIG_PATH),
-    path.relative(projectRoot, path.join(projectRoot, CONFIG_PATH)) ||
-      CONFIG_PATH,
-  );
-}
-
-// Base config directory following the XDG Base Directory Specification:
-// `$XDG_CONFIG_HOME` if set and non-absolute-path-safe, otherwise `$HOME/.config`.
-// This is the most portable default across Linux, macOS, and the BSDs.
-function configDir(): string {
-  const xdg = process.env.XDG_CONFIG_HOME;
-  if (xdg && xdg.trim() !== "" && path.isAbsolute(xdg)) return xdg;
-  return path.join(os.homedir(), ".config");
-}
-
-function systemConfigPath(): string {
-  return path.join(configDir(), "echoriad", "config.json");
-}
-
-function loadSystemConfig(): ProjectConfig {
-  return parseConfigFile(systemConfigPath(), "system config");
-}
-
 function expandEnvAndTilde(rawPath: string): string {
   let expanded = rawPath.replace(
     /\$(?:([A-Za-z_][A-Za-z0-9_]*)|{([A-Za-z_][A-Za-z0-9_]*)})/g,
@@ -760,45 +700,37 @@ function resolveMounts(projectRoot: string): ResolvedMounts {
   return { vfsMounts, hostMounts };
 }
 
-function resolveVmOptions(projectRoot: string): {
-  options: VMOptions;
+type ResolvedImageStartup = {
+  imagePath?: string;
   imageLabel: string;
-  hostMounts: HostMountMapping[];
-} {
+};
+
+/**
+ * Resolve the guest image source for this startup. When a build config is
+ * selected, the human approval prompt, fingerprinting, and automatic build
+ * happen here; the returned image selector is the imported Gondolin build id.
+ */
+async function resolveImageStartup(
+  projectRoot: string,
+  ctx?: ExtensionContext,
+): Promise<ResolvedImageStartup> {
   const project = loadProjectConfig(projectRoot);
   const system = loadSystemConfig();
 
-  // Precedence for scalar defaults: project config > system config > env var.
-  // Relative image paths resolve against the base dir of whichever source
-  // supplied them (the directory containing the config file, or process.cwd()
-  // for the env var, matching Gondolin's own resolvePathSelector() behaviour).
-  const systemPath = systemConfigPath();
-  let image: string | undefined;
-  let imageBase: string;
-  if (project.image) {
-    image = project.image;
-    imageBase = projectRoot;
-  } else if (system.image) {
-    image = system.image;
-    imageBase = path.dirname(systemPath);
-  } else {
-    image = process.env.ECHORIAD_IMAGE;
-    imageBase = process.cwd();
-  }
-  const cpus = project.cpus ?? system.cpus;
-  const memory = project.memory ?? system.memory;
+  const selection = resolveImageSelection(project, system, projectRoot);
 
-  const sandbox: NonNullable<VMOptions["sandbox"]> = {};
-  if (image) {
-    // A string imagePath can be either an image selector (`name:tag` / build id)
-    // or a directory containing guest assets. Gondolin's resolvePathSelector()
-    // resolves directory paths against process.cwd(); if the directory is
-    // missing it silently falls through to parseImageRef(), which rejects
-    // path-shaped strings with a confusing "invalid image name" error.
-    // Resolve path-like selectors against the image source's base dir
-    // ourselves and surface a clear error when the directory doesn't exist.
-    if (typeof image === "string" && image.startsWith(".")) {
-      const resolved = path.resolve(imageBase, image);
+  if (selection.kind === "default") {
+    return { imageLabel: "default" };
+  }
+
+  if (selection.kind === "image") {
+    // Precedence: project config > system config > env var. Relative image
+    // paths resolve against the base dir of whichever source supplied them
+    // (the directory containing the config file, or process.cwd() for the
+    // env var, matching Gondolin's own resolvePathSelector() behaviour).
+    const image = selection.value;
+    if (image.startsWith(".")) {
+      const resolved = path.resolve(selection.baseDir, image);
       let isDir = false;
       try {
         isDir = fs.statSync(resolved).isDirectory();
@@ -811,10 +743,68 @@ function resolveVmOptions(projectRoot: string): {
             `Use a "name:tag" selector or a directory containing vmlinuz-virt, initramfs.cpio.lz4, rootfs.ext4.`,
         );
       }
-      sandbox.imagePath = resolved;
-    } else {
-      sandbox.imagePath = image;
+      return { imagePath: resolved, imageLabel: image };
     }
+    return { imagePath: image, imageLabel: image };
+  }
+
+  // A build config is selected: fingerprint it, require approval, then reuse
+  // or build the guest image before VM creation.
+  const result = await prepareGuestImage({
+    configPath: selection.configPath,
+    projectRoot,
+    consumer:
+      selection.origin === "system"
+        ? "system configuration"
+        : `project (${projectRoot})`,
+    interactive: Boolean(ctx?.hasUI),
+    approve: (summary) =>
+      ctx
+        ? ctx.ui.confirm("Build Gondolin guest image?", summary)
+        : Promise.resolve(false),
+    onStatus: (message) =>
+      ctx?.ui.setStatus("echoriad", `Echoriad: ${message}`),
+    onBuildOutput: (chunk) => {
+      const lastLine =
+        chunk
+          .split("\n")
+          .map((line) => line.trim())
+          .filter(Boolean)
+          .pop() ?? "";
+      if (lastLine) {
+        ctx?.ui.setStatus(
+          "echoriad",
+          `Echoriad: building guest image — ${lastLine.slice(0, 80)}`,
+        );
+      }
+    },
+    onBuildFailure: (outputTail) => {
+      ctx?.ui.notify(
+        `Echoriad: guest image build failed.\nRecent Gondolin output:\n${outputTail}`,
+        "error",
+      );
+    },
+  });
+  return { imagePath: result.imageSelector, imageLabel: result.imageRef };
+}
+
+function resolveVmOptions(
+  projectRoot: string,
+  image: ResolvedImageStartup,
+): {
+  options: VMOptions;
+  imageLabel: string;
+  hostMounts: HostMountMapping[];
+} {
+  const project = loadProjectConfig(projectRoot);
+  const system = loadSystemConfig();
+
+  const cpus = project.cpus ?? system.cpus;
+  const memory = project.memory ?? system.memory;
+
+  const sandbox: NonNullable<VMOptions["sandbox"]> = {};
+  if (image.imagePath) {
+    sandbox.imagePath = image.imagePath;
   }
   if (typeof cpus === "number") sandbox.cpus = cpus;
   if (typeof memory === "string") sandbox.memory = memory;
@@ -829,7 +819,7 @@ function resolveVmOptions(projectRoot: string): {
 
   if (network.enabled === false) {
     sandbox.netEnabled = false;
-    return { options, imageLabel: image ?? "default", hostMounts };
+    return { options, imageLabel: image.imageLabel, hostMounts };
   }
 
   const hasHttpPolicy = Array.isArray(network.allowedHosts) || network.secrets;
@@ -862,7 +852,7 @@ function resolveVmOptions(projectRoot: string): {
     options.dns = { mode: "synthetic", syntheticHostMapping: "per-host" };
   }
 
-  return { options, imageLabel: image ?? "default", hostMounts };
+  return { options, imageLabel: image.imageLabel, hostMounts };
 }
 
 export default function (pi: ExtensionAPI) {
@@ -877,6 +867,8 @@ export default function (pi: ExtensionAPI) {
 
   let vm: VM | undefined;
   let vmStarting: Promise<VM> | undefined;
+  let permanentStartupError: string | undefined;
+  let resolvedImage: ResolvedImageStartup | undefined;
   let shellPath = "/bin/sh";
   let imageLabel = "default";
   let hostMounts: HostMountMapping[] = [];
@@ -886,11 +878,18 @@ export default function (pi: ExtensionAPI) {
       "echoriad",
       ctx.ui.theme.fg("accent", `Echoriad: starting ${GUEST_WORKSPACE}`),
     );
+    // Resolve the image source first: a selected build config is approved,
+    // fingerprinted, and built (or reused) before the VM is created. The
+    // result is memoized so a transient VM-creation failure does not prompt
+    // (or rebuild) again on the next startup attempt.
+    if (!resolvedImage) {
+      resolvedImage = await resolveImageStartup(localCwd, ctx);
+    }
     const {
       options: vmOptions,
       imageLabel: resolvedImageLabel,
       hostMounts: resolvedHostMounts,
-    } = resolveVmOptions(localCwd);
+    } = resolveVmOptions(localCwd, resolvedImage);
     imageLabel = resolvedImageLabel;
     hostMounts = resolvedHostMounts;
     const created = await VM.create(vmOptions);
@@ -917,8 +916,16 @@ export default function (pi: ExtensionAPI) {
 
   async function ensureVm(ctx?: ExtensionContext): Promise<VM> {
     if (vm) return vm;
+    if (permanentStartupError) throw new Error(permanentStartupError);
     if (!vmStarting) {
-      vmStarting = startVm(ctx).finally(() => {
+      vmStarting = startVm(ctx).catch((error) => {
+        // Fail closed: an approval denial or a noninteractive session must
+        // not re-prompt (and re-hash host inputs) on every later tool call.
+        if (error instanceof GuestImageError && error.permanent) {
+          permanentStartupError = error.message;
+        }
+        throw error;
+      }).finally(() => {
         vmStarting = undefined;
       });
     }
@@ -1060,6 +1067,12 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("before_agent_start", async (event, ctx) => {
+    // A permanent startup failure (approval denial, noninteractive session)
+    // was already reported during session_start; do not attempt (and log)
+    // the VM again here. The system prompt stays host-side, which is
+    // truthful while no VM is running. Tools still fail closed through
+    // ensureVm.
+    if (permanentStartupError) return undefined;
     await ensureVm(ctx);
     const localLine = `Current working directory: ${localCwd}`;
     const guestLine = `Current working directory: ${GUEST_WORKSPACE} (Gondolin VM; host workspace mounted from ${localCwd})`;
