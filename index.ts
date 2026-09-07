@@ -34,6 +34,17 @@
  *     "image": "my-custom:latest",            // optional, overrides ECHORIAD_IMAGE
  *     "cpus": 4,                              // optional, default 2
  *     "memory": "2G",                         // optional, qemu syntax, default "1G"
+ *     "mounts": {
+ *       "/root/.pi": {
+ *         "type": "host",
+ *         "path": "~/.pi",
+ *         "readonly": true
+ *       },
+ *       "/tmp/scratch": {
+ *         "type": "memory"
+ *       },
+ *       "/mnt/extra": "extra"
+ *     },
  *     "network": {
  *       "enabled": true,                      // optional, default true
  *       "allowedHosts": ["api.github.com"],   // optional HTTP/HTTPS egress allowlist
@@ -48,6 +59,12 @@
  *       }
  *     }
  *   }
+ *
+ *  Mounts:
+ *    - Key is the guest-absolute mount point
+ *    - Strings configure read-write host mounts relative to the project root
+ *    - Object host mounts support `path` (~, $ENV expansion) and `readonly: true`
+ *    - Memory mounts use `type: "memory"` and optional `readonly: true`
  *
  *  Networking:
  *    - `network.enabled`: set to `false` to disable networking entirely
@@ -64,7 +81,10 @@ import os from "node:os";
 import path from "node:path";
 import {
   createHttpHooks,
+  MemoryProvider,
+  ReadonlyProvider,
   RealFSProvider,
+  type VirtualProvider,
   VM,
   type VMOptions,
 } from "@earendil-works/gondolin";
@@ -118,35 +138,52 @@ function isInsideHostPath(root: string, value: string): boolean {
   );
 }
 
-function hostPathToGuest(localCwd: string, hostPath: string): string {
-  const relativePath = path.relative(localCwd, hostPath);
-  if (!isInsideHostPath(localCwd, hostPath)) return toPosix(hostPath);
-  return relativePath
-    ? path.posix.join(GUEST_WORKSPACE, toPosix(relativePath))
-    : GUEST_WORKSPACE;
-}
+type HostMountMapping = {
+  hostPath: string;
+  guestPath: string;
+};
 
-function toGuestPath(localCwd: string, inputPath: string): string {
+function toGuestPath(
+  localCwd: string,
+  inputPath: string,
+  hostMounts?: HostMountMapping[],
+): string {
   const trimmed = stripAtPrefix(inputPath.trim());
   if (!trimmed) return GUEST_WORKSPACE;
+
+  const mappings =
+    hostMounts && hostMounts.length > 0
+      ? hostMounts
+      : [{ hostPath: localCwd, guestPath: GUEST_WORKSPACE }];
+
   if (path.isAbsolute(trimmed)) {
-    if (isInsideHostPath(localCwd, trimmed))
-      return hostPathToGuest(localCwd, trimmed);
+    for (const mount of mappings) {
+      if (isInsideHostPath(mount.hostPath, trimmed)) {
+        const relativePath = path.relative(mount.hostPath, trimmed);
+        return relativePath
+          ? path.posix.join(mount.guestPath, toPosix(relativePath))
+          : mount.guestPath;
+      }
+    }
     return path.posix.resolve("/", toPosix(trimmed));
   }
   return path.posix.resolve(GUEST_WORKSPACE, toPosix(trimmed));
 }
 
-function createEchoriadReadOps(vm: VM, localCwd: string): ReadOperations {
+function createEchoriadReadOps(
+  vm: VM,
+  localCwd: string,
+  hostMounts?: HostMountMapping[],
+): ReadOperations {
   return {
     readFile: async (filePath) =>
-      vm.fs.readFile(toGuestPath(localCwd, filePath)),
+      vm.fs.readFile(toGuestPath(localCwd, filePath, hostMounts)),
     access: async (filePath) => {
-      await vm.fs.access(toGuestPath(localCwd, filePath));
+      await vm.fs.access(toGuestPath(localCwd, filePath, hostMounts));
     },
     detectImageMimeType: async (filePath) => {
       const ext = path.posix
-        .extname(toGuestPath(localCwd, filePath))
+        .extname(toGuestPath(localCwd, filePath, hostMounts))
         .toLowerCase();
       if (ext === ".png") return "image/png";
       if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
@@ -157,22 +194,36 @@ function createEchoriadReadOps(vm: VM, localCwd: string): ReadOperations {
   };
 }
 
-function createEchoriadWriteOps(vm: VM, localCwd: string): WriteOperations {
+function createEchoriadWriteOps(
+  vm: VM,
+  localCwd: string,
+  hostMounts?: HostMountMapping[],
+): WriteOperations {
   return {
     writeFile: async (filePath, content) => {
-      await vm.fs.writeFile(toGuestPath(localCwd, filePath), content, {
-        encoding: "utf8",
-      });
+      await vm.fs.writeFile(
+        toGuestPath(localCwd, filePath, hostMounts),
+        content,
+        {
+          encoding: "utf8",
+        },
+      );
     },
     mkdir: async (dirPath) => {
-      await vm.fs.mkdir(toGuestPath(localCwd, dirPath), { recursive: true });
+      await vm.fs.mkdir(toGuestPath(localCwd, dirPath, hostMounts), {
+        recursive: true,
+      });
     },
   };
 }
 
-function createEchoriadEditOps(vm: VM, localCwd: string): EditOperations {
-  const readOps = createEchoriadReadOps(vm, localCwd);
-  const writeOps = createEchoriadWriteOps(vm, localCwd);
+function createEchoriadEditOps(
+  vm: VM,
+  localCwd: string,
+  hostMounts?: HostMountMapping[],
+): EditOperations {
+  const readOps = createEchoriadReadOps(vm, localCwd, hostMounts);
+  const writeOps = createEchoriadWriteOps(vm, localCwd, hostMounts);
   return {
     readFile: readOps.readFile,
     writeFile: writeOps.writeFile,
@@ -180,18 +231,24 @@ function createEchoriadEditOps(vm: VM, localCwd: string): EditOperations {
   };
 }
 
-function createEchoriadLsOps(vm: VM, localCwd: string): LsOperations {
+function createEchoriadLsOps(
+  vm: VM,
+  localCwd: string,
+  hostMounts?: HostMountMapping[],
+): LsOperations {
   return {
     exists: async (filePath) => {
       try {
-        await vm.fs.access(toGuestPath(localCwd, filePath));
+        await vm.fs.access(toGuestPath(localCwd, filePath, hostMounts));
         return true;
       } catch {
         return false;
       }
     },
-    stat: async (filePath) => vm.fs.stat(toGuestPath(localCwd, filePath)),
-    readdir: async (dirPath) => vm.fs.listDir(toGuestPath(localCwd, dirPath)),
+    stat: async (filePath) =>
+      vm.fs.stat(toGuestPath(localCwd, filePath, hostMounts)),
+    readdir: async (dirPath) =>
+      vm.fs.listDir(toGuestPath(localCwd, dirPath, hostMounts)),
   };
 }
 
@@ -249,18 +306,22 @@ function matchesToolGlob(relativePath: string, pattern: string): boolean {
   );
 }
 
-function createEchoriadFindOps(vm: VM, localCwd: string): FindOperations {
+function createEchoriadFindOps(
+  vm: VM,
+  localCwd: string,
+  hostMounts?: HostMountMapping[],
+): FindOperations {
   return {
     exists: async (filePath) => {
       try {
-        await vm.fs.access(toGuestPath(localCwd, filePath));
+        await vm.fs.access(toGuestPath(localCwd, filePath, hostMounts));
         return true;
       } catch {
         return false;
       }
     },
     glob: async (pattern, cwd, options) => {
-      const root = toGuestPath(localCwd, cwd);
+      const root = toGuestPath(localCwd, cwd, hostMounts);
       const results: string[] = [];
       await walkGuestFiles(vm, root, async (guestPath, relativePath) => {
         if (results.length >= options.limit) return false;
@@ -323,8 +384,9 @@ async function executeEchoriadGrep(
   localCwd: string,
   params: GrepToolInput,
   signal?: AbortSignal,
+  hostMounts?: HostMountMapping[],
 ): Promise<TextToolResult<GrepToolDetails>> {
-  const root = toGuestPath(localCwd, params.path ?? ".");
+  const root = toGuestPath(localCwd, params.path ?? ".", hostMounts);
   const rootStat = await vm.fs.stat(root, { signal });
   const rootIsDirectory = rootStat.isDirectory();
   const matcher = createLineMatcher(
@@ -434,11 +496,12 @@ function createEchoriadBashOps(
   vm: VM,
   localCwd: string,
   shellPath: string,
+  hostMounts?: HostMountMapping[],
 ): BashOperations {
   return {
     exec: async (command, cwd, { onData, signal, timeout, env }) => {
       if (signal?.aborted) throw new Error("aborted");
-      const guestCwd = toGuestPath(localCwd, cwd);
+      const guestCwd = toGuestPath(localCwd, cwd, hostMounts);
       const controller = new AbortController();
       const onAbort = () => controller.abort();
       signal?.addEventListener("abort", onAbort, { once: true });
@@ -488,12 +551,25 @@ type ProjectNetworkConfig = {
   tcp?: Record<string, string>;
 };
 
+type HostMountConfig = {
+  type?: "host";
+  path: string;
+  readonly?: boolean;
+};
+
+type MemoryMountConfig = {
+  type: "memory";
+  readonly?: boolean;
+};
+
+type MountConfig = string | HostMountConfig | MemoryMountConfig;
+
 type ProjectConfig = {
   image?: string;
   cpus?: number;
   memory?: string;
   network?: ProjectNetworkConfig;
-  mounts?: Record<string, string>;
+  mounts?: Record<string, MountConfig>;
 };
 
 const CONFIG_PATH = ".echoriad.json";
@@ -547,26 +623,147 @@ function loadSystemConfig(): ProjectConfig {
   return parseConfigFile(systemConfigPath(), "system config");
 }
 
-function resolveMounts(
-  projectRoot: string,
-): Record<string, RealFSProvider> {
+function expandEnvAndTilde(rawPath: string): string {
+  let expanded = rawPath.replace(
+    /\$(?:([A-Za-z_][A-Za-z0-9_]*)|{([A-Za-z_][A-Za-z0-9_]*)})/g,
+    (_, name1, name2) => {
+      const varName = name1 || name2;
+      const value = process.env[varName];
+      if (value === undefined) {
+        throw new Error(
+          `Echoriad: environment variable "${varName}" in mount path "${rawPath}" is not set`,
+        );
+      }
+      return value;
+    },
+  );
+
+  if (expanded === "~") {
+    expanded = os.homedir();
+  } else if (expanded.startsWith("~/") || expanded.startsWith("~\\")) {
+    expanded = path.join(os.homedir(), expanded.slice(2));
+  }
+
+  return expanded;
+}
+
+function resolveHostPath(projectRoot: string, rawPath: string): string {
+  const expanded = expandEnvAndTilde(rawPath);
+  return path.resolve(projectRoot, expanded);
+}
+
+function validateHostDirectory(rawPath: string, hostPath: string): void {
+  if (!fs.existsSync(hostPath)) {
+    throw new Error(
+      `Echoriad: host mount path does not exist: ${rawPath} (${hostPath})`,
+    );
+  }
+  const stat = fs.statSync(hostPath);
+  if (!stat.isDirectory()) {
+    throw new Error(
+      `Echoriad: host mount path is not a directory: ${rawPath} (${hostPath})`,
+    );
+  }
+}
+
+type ResolvedMounts = {
+  vfsMounts: Record<string, VirtualProvider>;
+  hostMounts: HostMountMapping[];
+};
+
+function resolveMounts(projectRoot: string): ResolvedMounts {
   const config = loadProjectConfig(projectRoot);
-  const mounts: Record<string, RealFSProvider> = {
+  const vfsMounts: Record<string, VirtualProvider> = {
     [GUEST_WORKSPACE]: new RealFSProvider(projectRoot),
   };
+  const hostMountMap = new Map<string, string>();
+  hostMountMap.set(GUEST_WORKSPACE, projectRoot);
+
   if (config.mounts) {
-    for (const [guestPath, hostRelative] of Object.entries(config.mounts)) {
-      const hostPath = path.resolve(projectRoot, hostRelative);
-      fs.mkdirSync(hostPath, { recursive: true });
-      mounts[guestPath] = new RealFSProvider(hostPath);
+    if (typeof config.mounts !== "object" || Array.isArray(config.mounts)) {
+      throw new Error(`Echoriad: "mounts" configuration must be an object`);
+    }
+
+    for (const [rawGuestPath, mountDef] of Object.entries(config.mounts)) {
+      const guestPath = path.posix.resolve("/", toPosix(rawGuestPath));
+
+      if (typeof mountDef === "string") {
+        if (!mountDef.trim()) {
+          throw new Error(
+            `Echoriad: host mount path for "${rawGuestPath}" must not be empty`,
+          );
+        }
+        const hostPath = resolveHostPath(projectRoot, mountDef);
+        validateHostDirectory(mountDef, hostPath);
+        vfsMounts[guestPath] = new RealFSProvider(hostPath);
+        hostMountMap.set(guestPath, hostPath);
+      } else if (
+        mountDef &&
+        typeof mountDef === "object" &&
+        !Array.isArray(mountDef)
+      ) {
+        if (
+          mountDef.readonly !== undefined &&
+          typeof mountDef.readonly !== "boolean"
+        ) {
+          throw new Error(
+            `Echoriad: "readonly" option for mount "${rawGuestPath}" must be a boolean`,
+          );
+        }
+
+        const type = (mountDef as HostMountConfig).type ?? "host";
+        if (type === "host") {
+          const hostMount = mountDef as HostMountConfig;
+          if (
+            !hostMount.path ||
+            typeof hostMount.path !== "string" ||
+            !hostMount.path.trim()
+          ) {
+            throw new Error(
+              `Echoriad: host mount for "${rawGuestPath}" requires a non-empty string "path" property`,
+            );
+          }
+          const hostPath = resolveHostPath(projectRoot, hostMount.path);
+          validateHostDirectory(hostMount.path, hostPath);
+          let provider: VirtualProvider = new RealFSProvider(hostPath);
+          if (hostMount.readonly) {
+            provider = new ReadonlyProvider(provider);
+          }
+          vfsMounts[guestPath] = provider;
+          hostMountMap.set(guestPath, hostPath);
+        } else if (type === "memory") {
+          const memMount = mountDef as MemoryMountConfig;
+          let provider: VirtualProvider = new MemoryProvider();
+          if (memMount.readonly) {
+            provider = new ReadonlyProvider(provider);
+          }
+          vfsMounts[guestPath] = provider;
+          hostMountMap.delete(guestPath);
+        } else {
+          throw new Error(
+            `Echoriad: unknown mount type "${type}" for "${rawGuestPath}" (expected "host" or "memory")`,
+          );
+        }
+      } else {
+        throw new Error(
+          `Echoriad: invalid mount configuration for "${rawGuestPath}"`,
+        );
+      }
     }
   }
-  return mounts;
+
+  const hostMounts: HostMountMapping[] = Array.from(
+    hostMountMap.entries(),
+  ).map(([guestPath, hostPath]) => ({ guestPath, hostPath }));
+  hostMounts.sort((a, b) => b.hostPath.length - a.hostPath.length);
+
+  return { vfsMounts, hostMounts };
 }
 
 function resolveVmOptions(projectRoot: string): {
   options: VMOptions;
   imageLabel: string;
+  hostMounts: HostMountMapping[];
 } {
   const project = loadProjectConfig(projectRoot);
   const system = loadSystemConfig();
@@ -623,15 +820,16 @@ function resolveVmOptions(projectRoot: string): {
   if (typeof memory === "string") sandbox.memory = memory;
 
   const network = project.network ?? {};
+  const { vfsMounts, hostMounts } = resolveMounts(projectRoot);
   const options: VMOptions = {
     sessionLabel: `pi ${path.basename(projectRoot)}`,
     sandbox,
-    vfs: { mounts: resolveMounts(projectRoot) },
+    vfs: { mounts: vfsMounts },
   };
 
   if (network.enabled === false) {
     sandbox.netEnabled = false;
-    return { options, imageLabel: image ?? "default" };
+    return { options, imageLabel: image ?? "default", hostMounts };
   }
 
   const hasHttpPolicy = Array.isArray(network.allowedHosts) || network.secrets;
@@ -664,7 +862,7 @@ function resolveVmOptions(projectRoot: string): {
     options.dns = { mode: "synthetic", syntheticHostMapping: "per-host" };
   }
 
-  return { options, imageLabel: image ?? "default" };
+  return { options, imageLabel: image ?? "default", hostMounts };
 }
 
 export default function (pi: ExtensionAPI) {
@@ -681,15 +879,20 @@ export default function (pi: ExtensionAPI) {
   let vmStarting: Promise<VM> | undefined;
   let shellPath = "/bin/sh";
   let imageLabel = "default";
+  let hostMounts: HostMountMapping[] = [];
 
   async function startVm(ctx?: ExtensionContext): Promise<VM> {
     ctx?.ui.setStatus(
       "echoriad",
       ctx.ui.theme.fg("accent", `Echoriad: starting ${GUEST_WORKSPACE}`),
     );
-    const { options: vmOptions, imageLabel: resolvedImageLabel } =
-      resolveVmOptions(localCwd);
+    const {
+      options: vmOptions,
+      imageLabel: resolvedImageLabel,
+      hostMounts: resolvedHostMounts,
+    } = resolveVmOptions(localCwd);
     imageLabel = resolvedImageLabel;
+    hostMounts = resolvedHostMounts;
     const created = await VM.create(vmOptions);
     const bashProbe = await created.exec([
       "/bin/sh",
@@ -764,7 +967,7 @@ export default function (pi: ExtensionAPI) {
     async execute(id, params, signal, onUpdate, ctx) {
       const activeVm = await ensureVm(ctx);
       const tool = createReadTool(GUEST_WORKSPACE, {
-        operations: createEchoriadReadOps(activeVm, localCwd),
+        operations: createEchoriadReadOps(activeVm, localCwd, hostMounts),
       });
       return tool.execute(id, params, signal, onUpdate);
     },
@@ -775,7 +978,7 @@ export default function (pi: ExtensionAPI) {
     async execute(id, params, signal, onUpdate, ctx) {
       const activeVm = await ensureVm(ctx);
       const tool = createWriteTool(GUEST_WORKSPACE, {
-        operations: createEchoriadWriteOps(activeVm, localCwd),
+        operations: createEchoriadWriteOps(activeVm, localCwd, hostMounts),
       });
       return tool.execute(id, params, signal, onUpdate);
     },
@@ -786,7 +989,7 @@ export default function (pi: ExtensionAPI) {
     async execute(id, params, signal, onUpdate, ctx) {
       const activeVm = await ensureVm(ctx);
       const tool = createEditTool(GUEST_WORKSPACE, {
-        operations: createEchoriadEditOps(activeVm, localCwd),
+        operations: createEchoriadEditOps(activeVm, localCwd, hostMounts),
       });
       return tool.execute(id, params, signal, onUpdate);
     },
@@ -797,7 +1000,12 @@ export default function (pi: ExtensionAPI) {
     async execute(id, params, signal, onUpdate, ctx) {
       const activeVm = await ensureVm(ctx);
       const tool = createBashTool(GUEST_WORKSPACE, {
-        operations: createEchoriadBashOps(activeVm, localCwd, shellPath),
+        operations: createEchoriadBashOps(
+          activeVm,
+          localCwd,
+          shellPath,
+          hostMounts,
+        ),
       });
       return tool.execute(id, params, signal, onUpdate);
     },
@@ -808,7 +1016,7 @@ export default function (pi: ExtensionAPI) {
     async execute(id, params, signal, onUpdate, ctx) {
       const activeVm = await ensureVm(ctx);
       const tool = createLsTool(GUEST_WORKSPACE, {
-        operations: createEchoriadLsOps(activeVm, localCwd),
+        operations: createEchoriadLsOps(activeVm, localCwd, hostMounts),
       });
       return tool.execute(id, params, signal, onUpdate);
     },
@@ -819,7 +1027,7 @@ export default function (pi: ExtensionAPI) {
     async execute(id, params, signal, onUpdate, ctx) {
       const activeVm = await ensureVm(ctx);
       const tool = createFindTool(GUEST_WORKSPACE, {
-        operations: createEchoriadFindOps(activeVm, localCwd),
+        operations: createEchoriadFindOps(activeVm, localCwd, hostMounts),
       });
       return tool.execute(id, params, signal, onUpdate);
     },
@@ -829,13 +1037,26 @@ export default function (pi: ExtensionAPI) {
     ...localGrep,
     async execute(_id, params, signal, _onUpdate, ctx) {
       const activeVm = await ensureVm(ctx);
-      return executeEchoriadGrep(activeVm, localCwd, params, signal);
+      return executeEchoriadGrep(
+        activeVm,
+        localCwd,
+        params,
+        signal,
+        hostMounts,
+      );
     },
   });
 
   pi.on("user_bash", async (_event, ctx) => {
     const activeVm = await ensureVm(ctx);
-    return { operations: createEchoriadBashOps(activeVm, localCwd, shellPath) };
+    return {
+      operations: createEchoriadBashOps(
+        activeVm,
+        localCwd,
+        shellPath,
+        hostMounts,
+      ),
+    };
   });
 
   pi.on("before_agent_start", async (event, ctx) => {

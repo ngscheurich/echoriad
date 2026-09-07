@@ -27,7 +27,7 @@ On `session_start` the extension boots a Gondolin VM (lazily — only when the f
 | `bash`                    | `vm.exec` inside the guest, using `/bin/sh` or `bash` if available |
 | `ls` / `find` / `grep`    | guest VFS enumeration and file reads                               |
 
-Paths you give the tools are translated between host and guest automatically. A relative path resolves against `/workspace`; an absolute path inside the host working directory maps into `/workspace`; anything else is treated as a guest-absolute path.
+Paths you give the tools are translated between host and guest automatically. A relative path resolves against `/workspace`. An absolute path inside the host working directory or any configured host mount maps into the corresponding guest mount. Any other path is treated as a guest-absolute path.
 
 On `session_shutdown` the VM is closed. The system prompt is rewritten so the agent sees its working directory as `/workspace` rather than the host path.
 
@@ -85,18 +85,30 @@ Any field set in a project's `.echoriad.json` overrides the system-wide value, s
     "tcp": {
       "postgres": "127.0.0.1:5432"
     }
+  },
+  "mounts": {
+    "/root/.pi": {
+      "type": "host",
+      "path": "~/.pi",
+      "readonly": true
+    },
+    "/tmp/scratch": {
+      "type": "memory"
+    },
+    "/mnt/extra": "extra"
   }
 }
 ```
 
 ### Fields
 
-| Field     | Description                                                                                                                                                                                                                                 | Default                                                               |
-| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| Field     | Description                                                                                                                                                                                                                                                                                                                                   | Default                                                               |
+| --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
 | `image`   | Guest image selector (`name:tag` or build id) or a path to a directory containing the guest assets (`vmlinuz-virt`, `initramfs.cpio.lz4`, `rootfs.ext4`). A relative path is resolved against the config file that supplied it (project root for `.echoriad.json`, the system config directory for the XDG file). Overrides `ECHORIAD_IMAGE`. | Gondolin default (`alpine-base:latest`, or `$GONDOLIN_DEFAULT_IMAGE`) |
-| `cpus`    | Number of vCPUs                                                                                                                                                                                                                             | `2`                                                                   |
-| `memory`  | VM memory, QEMU syntax (e.g. `"1G"`, `"512M"`)                                                                                                                                                                                              | `"1G"`                                                                |
-| `network` | Network policy (see below)                                                                                                                                                                                                                  | enabled, allow all HTTP/HTTPS                                         |
+| `cpus`    | Number of vCPUs                                                                                                                                                                                                                                                                                                                               | `2`                                                                   |
+| `memory`  | VM memory, QEMU syntax (e.g. `"1G"`, `"512M"`)                                                                                                                                                                                                                                                                                                | `"1G"`                                                                |
+| `network` | Network policy (see below)                                                                                                                                                                                                                                                                                                                    | enabled, allow all HTTP/HTTPS                                         |
+| `mounts`  | Additional guest filesystem mounts (see below)                                                                                                                                                                                                                                                                                                | `{}`                                                                  |
 
 ### Network
 
@@ -105,13 +117,22 @@ Any field set in a project's `.echoriad.json` overrides the system-wide value, s
 - `network.secrets`: Maps a host env var to a guest-side placeholder scoped to specific hosts. `fromEnv` defaults to the secret name. The referenced host env var **must** be set, or the extension errors out at VM start.
 - `network.tcp`: Maps raw-TCP destinations (e.g. databases) from a guest hostname to an upstream `host:port`. Required for non-HTTP protocols, which are otherwise blocked by Gondolin's protocol sniffer. When `network.tcp` is present the extension enables synthetic per-host DNS automatically.
 
+### Mounts
+
+`mounts` keys map guest-absolute target paths to host directories or in-memory filesystems:
+
+- Plain string shorthand (e.g. `"/mnt/extra": "extra"`): Maps to a read-write host directory relative to the project root.
+- `type: "host"` (default when `path` is specified): Maps a host directory into the guest. `path` resolves relative to the project root, expands `~` to the user home directory, and interpolates `$VAR` and `${VAR}` environment variables. Echoriad throws an error at startup if the resolved host directory does not exist or is not a directory.
+- `type: "memory"`: Backs the mount with an isolated, temporary in-memory filesystem.
+- `readonly: true`: Blocks write operations on the mount.
+
 ## Environment variables
 
-| Variable                 | Purpose                                                                           |
-| ------------------------ | --------------------------------------------------------------------------------- |
-| `ECHORIAD_IMAGE`         | Fallback guest image selector / asset directory when `image` is not set in either config file |
+| Variable                 | Purpose                                                                                                               |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------- |
+| `ECHORIAD_IMAGE`         | Fallback guest image selector / asset directory when `image` is not set in either config file                         |
 | `XDG_CONFIG_HOME`        | Base config directory (default `$HOME/.config`); the system file is read from `$XDG_CONFIG_HOME/echoriad/config.json` |
-| `GONDOLIN_DEFAULT_IMAGE` | Overrides Gondolin's bundled default image                                        |
+| `GONDOLIN_DEFAULT_IMAGE` | Overrides Gondolin's bundled default image                                                                            |
 
 ## Credits
 
