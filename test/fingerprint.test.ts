@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import type { BuildConfig } from "@earendil-works/gondolin";
@@ -13,8 +14,12 @@ import {
   type LocalInputNode,
 } from "../src/fingerprint.ts";
 
-function makeTree(): { dir: string; p: (...parts: string[]) => string } {
-  const dir = fs.mkdtempSync(path.join("/tmp", "echoriad-fp-"));
+function makeTree(t: { after: (fn: () => void) => void }): {
+  dir: string;
+  p: (...parts: string[]) => string;
+} {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "echoriad-fp-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   return { dir, p: (...parts: string[]) => path.join(dir, ...parts) };
 }
 
@@ -47,8 +52,8 @@ test("gondolinVersion reads the installed package version", () => {
   assert.equal(gondolinVersion(), "0.12.0");
 });
 
-test("fingerprint is stable across JSON formatting and key order", () => {
-  const { dir } = makeTree();
+test("fingerprint is stable across JSON formatting and key order", (t) => {
+  const { dir } = makeTree(t);
   const one = writeBuildConfig(dir, {
     arch: "aarch64",
     distro: "alpine",
@@ -68,8 +73,8 @@ test("fingerprint is stable across JSON formatting and key order", () => {
   assert.equal(first.fingerprint, second.fingerprint);
 });
 
-test("fingerprint covers recognized local inputs", () => {
-  const { dir, p } = makeTree();
+test("fingerprint covers recognized local inputs", (t) => {
+  const { dir, p } = makeTree(t);
   fs.writeFileSync(p("init.sh"), "echo hi\n");
   fs.writeFileSync(p("helper"), "binary");
   const config: BuildConfig = {
@@ -82,8 +87,8 @@ test("fingerprint covers recognized local inputs", () => {
   assert.deepEqual(result.localInputPaths, [p("init.sh"), p("helper")]);
 });
 
-test("changing a local input changes the fingerprint (invalidation)", () => {
-  const { dir, p } = makeTree();
+test("changing a local input changes the fingerprint (invalidation)", (t) => {
+  const { dir, p } = makeTree(t);
   fs.writeFileSync(p("init.sh"), "echo one\n");
   const config: BuildConfig = {
     ...baseConfig(),
@@ -102,8 +107,8 @@ test("changing a local input changes the fingerprint (invalidation)", () => {
   assert.equal(second.fingerprint, third.fingerprint);
 });
 
-test("file mode changes the fingerprint when it is build-relevant", () => {
-  const { dir, p } = makeTree();
+test("file mode changes the fingerprint when it is build-relevant", (t) => {
+  const { dir, p } = makeTree(t);
   const script = p("init.sh");
   fs.writeFileSync(script, "echo hi\n");
   fs.chmodSync(script, 0o755);
@@ -116,8 +121,8 @@ test("file mode changes the fingerprint when it is build-relevant", () => {
   assert.notEqual(exec.fingerprint, nonExec.fingerprint);
 });
 
-test("directory inputs hash entry names, contents, and symlink targets deterministically", () => {
-  const { dir, p } = makeTree();
+test("directory inputs hash entry names, contents, and symlink targets deterministically", (t) => {
+  const { dir, p } = makeTree(t);
   const tree = p("tree");
   fs.mkdirSync(tree);
   fs.writeFileSync(path.join(tree, "a.txt"), "A");
@@ -153,8 +158,8 @@ test("directory inputs hash entry names, contents, and symlink targets determini
   assert.notEqual(first.fingerprint, fourth.fingerprint);
 });
 
-test("special filesystem nodes are rejected with actionable errors", () => {
-  const { dir, p } = makeTree();
+test("special filesystem nodes are rejected with actionable errors", (t) => {
+  const { dir, p } = makeTree(t);
   const fifo = p("pipe");
   let created = false;
   try {
@@ -171,8 +176,8 @@ test("special filesystem nodes are rejected with actionable errors", () => {
   assert.throws(() => computeBuildFingerprint(config, dir), /unsupported FIFO/);
 });
 
-test("missing local inputs are rejected with the declared and resolved path", () => {
-  const { dir, p } = makeTree();
+test("missing local inputs are rejected with the declared and resolved path", (t) => {
+  const { dir, p } = makeTree(t);
   const config: BuildConfig = {
     ...baseConfig(),
     init: { rootfsInit: "does-not-exist.sh" },
@@ -186,8 +191,8 @@ test("missing local inputs are rejected with the declared and resolved path", ()
   );
 });
 
-test("fingerprint includes the gondolin version and schema version", () => {
-  const { dir } = makeTree();
+test("fingerprint includes the gondolin version and schema version", (t) => {
+  const { dir } = makeTree(t);
   const config = baseConfig();
   const result = computeBuildFingerprint(config, dir);
   // Recompute the expected digest from the documented payload.
@@ -206,8 +211,8 @@ test("fingerprint includes the gondolin version and schema version", () => {
   assert.equal(result.abbreviated, expected.slice(0, 12));
 });
 
-test("directory traversal includes node types (directory vs file differ)", () => {
-  const { dir, p } = makeTree();
+test("directory traversal includes node types (directory vs file differ)", (t) => {
+  const { dir, p } = makeTree(t);
   const a = p("thing");
   fs.writeFileSync(a, "x");
   const fileConfig: BuildConfig = {
@@ -222,8 +227,8 @@ test("directory traversal includes node types (directory vs file differ)", () =>
   assert.notEqual(asFile.fingerprint, asDir.fingerprint);
 });
 
-test("input node shapes cover file, symlink, and directory", () => {
-  const { dir, p } = makeTree();
+test("input node shapes cover file, symlink, and directory", (t) => {
+  const { dir, p } = makeTree(t);
   fs.writeFileSync(p("f"), "content");
   fs.symlinkSync("f", p("l"));
   fs.mkdirSync(p("d"));

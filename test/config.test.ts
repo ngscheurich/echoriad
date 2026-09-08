@@ -3,10 +3,19 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { type ProjectConfig, parseConfigFile, resolveImageSelection } from "../src/config.ts";
+import {
+  ConfigError,
+  type ProjectConfig,
+  parseConfigFile,
+  resolveImageSelection,
+} from "../src/config.ts";
 
-function makeConfigDir(): { dir: string; write: (content: string) => string } {
+function makeConfigDir(t: { after: (fn: () => void) => void }): {
+  dir: string;
+  write: (content: string) => string;
+} {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "echoriad-config-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const configPath = path.join(dir, ".echoriad.json");
   return {
     dir,
@@ -83,8 +92,8 @@ test("absolute buildConfig paths remain absolute", () => {
   );
 });
 
-test("parseConfigFile rejects image + buildConfig in the same file", () => {
-  const { dir, write } = makeConfigDir();
+test("parseConfigFile rejects image + buildConfig in the same file", (t) => {
+  const { dir, write } = makeConfigDir(t);
   write(JSON.stringify({ image: "a:1", buildConfig: "b.json" }));
   assert.throws(
     () => parseConfigFile(path.join(dir, ".echoriad.json"), "project config"),
@@ -92,8 +101,8 @@ test("parseConfigFile rejects image + buildConfig in the same file", () => {
   );
 });
 
-test("buildConfig must be a non-empty string", () => {
-  const { dir, write } = makeConfigDir();
+test("buildConfig must be a non-empty string", (t) => {
+  const { dir, write } = makeConfigDir(t);
   write(JSON.stringify({ buildConfig: "" }));
   assert.throws(
     () => parseConfigFile(path.join(dir, ".echoriad.json"), "project config"),
@@ -113,4 +122,90 @@ test("other scalar fields keep independent precedence (cpus example)", () => {
   const memory = project.memory ?? system.memory;
   assert.equal(cpus, 4);
   assert.equal(memory, "4G");
+});
+
+test("invalid field types fail with file-and-field messages", (t) => {
+  const cases: { name: string; content: unknown; message: RegExp }[] = [
+    {
+      name: "numeric image",
+      content: { image: 5 },
+      message: /field "image" must be a non-empty string/,
+    },
+    {
+      name: "blank image",
+      content: { image: "  " },
+      message: /field "image" must be a non-empty string/,
+    },
+    { name: "string cpus", content: { cpus: "4" }, message: /field "cpus" must be an integer/ },
+    { name: "numeric memory", content: { memory: 2 }, message: /field "memory" must be a string/ },
+    {
+      name: "non-array allowedHosts",
+      content: { network: { allowedHosts: "api.github.com" } },
+      message: /"network.allowedHosts" must be an array of strings/,
+    },
+    {
+      name: "non-string secret hosts",
+      content: { network: { secrets: { GITHUB_TOKEN: { hosts: "api.github.com" } } } },
+      message: /"network.secrets.GITHUB_TOKEN.hosts" must be an array of strings/,
+    },
+    {
+      name: "non-string fromEnv",
+      content: { network: { secrets: { GITHUB_TOKEN: { hosts: [], fromEnv: 1 } } } },
+      message: /"network.secrets.GITHUB_TOKEN.fromEnv" must be a string/,
+    },
+    {
+      name: "numeric tcp upstream",
+      content: { network: { tcp: { postgres: 5432 } } },
+      message: /"network.tcp" must be an object mapping/,
+    },
+    {
+      name: "non-boolean enabled",
+      content: { network: { enabled: "yes" } },
+      message: /"network.enabled" must be a boolean/,
+    },
+    { name: "array mounts", content: { mounts: [] }, message: /"mounts" must be an object/ },
+  ];
+  for (const { name, content, message } of cases) {
+    const { dir, write } = makeConfigDir(t);
+    write(JSON.stringify(content));
+    assert.throws(
+      () => parseConfigFile(path.join(dir, ".echoriad.json"), "project config"),
+      message,
+      name,
+    );
+  }
+});
+
+test("valid scalar and network fields parse", (t) => {
+  const { dir, write } = makeConfigDir(t);
+  write(
+    JSON.stringify({
+      image: "my:latest",
+      cpus: 4,
+      memory: "2G",
+      mounts: { "/mnt/extra": "extra" },
+      network: {
+        enabled: true,
+        allowedHosts: ["api.github.com"],
+        secrets: { GITHUB_TOKEN: { hosts: ["api.github.com"], fromEnv: "GITHUB_TOKEN" } },
+        tcp: { postgres: "127.0.0.1:5432" },
+      },
+    }),
+  );
+  const parsed = parseConfigFile(path.join(dir, ".echoriad.json"), "project config");
+  assert.equal(parsed.image, "my:latest");
+  assert.equal(parsed.cpus, 4);
+  assert.equal(parsed.memory, "2G");
+});
+
+test("an unreadable config file fails loudly; a missing one reads as absent", (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "echoriad-config-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  // A directory at the config path fails to read (EISDIR) and must surface.
+  const configPath = path.join(dir, ".echoriad.json");
+  fs.mkdirSync(configPath);
+  assert.throws(() => parseConfigFile(configPath, "project config"), ConfigError);
+  assert.throws(() => parseConfigFile(configPath, "project config"), /could not read/);
+  // A missing file is the intended "no configuration" case.
+  assert.deepEqual(parseConfigFile(path.join(dir, "absent.json"), "project config"), {});
 });

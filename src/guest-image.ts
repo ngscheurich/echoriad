@@ -384,8 +384,9 @@ export async function runGondolinBuild(
  * Gondolin's store before building, so any consumer with matching inputs
  * can reuse a global build. Silent reuse requires an authorized
  * association (consumer, build-config identity, fingerprint, build ID)
- * with a valid image object; a new consumer reusing a global image and an
- * uncached fingerprint both require approval. A missing Gondolin object
+ * with a valid image object whose build ID matches the association's; a
+ * new consumer reusing a global image and an uncached fingerprint both
+ * require approval. A missing Gondolin object
  * makes the cache entry unusable: Echoriad prompts and rebuilds, and never
  * falls back to an image produced for an older fingerprint.
  *
@@ -473,7 +474,12 @@ async function prepareImage(options: PrepareGuestImageOptions): Promise<GuestIma
     configPath,
   });
 
-  if (authorized && cached) {
+  // A matching authorized association permits silent cache reuse. The
+  // association's build ID must also match the image the fingerprint
+  // currently resolves to: after a same-fingerprint rebuild the recorded
+  // build ID is stale, and a mismatch falls through to the approval
+  // prompt, which re-records the current build ID.
+  if (authorized && cached && authorized.buildId === cached.buildId) {
     options.onStatus?.(`reusing authorized guest image ${fp.abbreviated}`);
     return result(cached, false);
   }

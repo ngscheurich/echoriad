@@ -50,37 +50,154 @@ export type ProjectConfig = {
 
 export const CONFIG_PATH = ".echoriad.json";
 
+/** Errors from configuration reading, parsing, and validation. */
+export class ConfigError extends Error {
+  readonly configPath: string;
+  constructor(message: string, configPath: string) {
+    super(message);
+    this.name = "ConfigError";
+    this.configPath = configPath;
+  }
+}
+
+function invalid(label: string, configPath: string, message: string): ConfigError {
+  return new ConfigError(`Echoriad: invalid ${label} (${configPath}): ${message}`, configPath);
+}
+
+function requireStringArray(
+  value: unknown,
+  field: string,
+  label: string,
+  configPath: string,
+): void {
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) {
+    throw invalid(label, configPath, `field "${field}" must be an array of strings`);
+  }
+}
+
+function validateNetwork(value: unknown, label: string, configPath: string): void {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw invalid(label, configPath, `field "network" must be an object`);
+  }
+  const network = value as ProjectNetworkConfig;
+  if ("enabled" in network && typeof network.enabled !== "boolean") {
+    throw invalid(label, configPath, `field "network.enabled" must be a boolean`);
+  }
+  if ("allowedHosts" in network) {
+    requireStringArray(network.allowedHosts, "network.allowedHosts", label, configPath);
+  }
+  if ("tcp" in network) {
+    const tcp = network.tcp;
+    if (
+      tcp === null ||
+      typeof tcp !== "object" ||
+      Array.isArray(tcp) ||
+      Object.values(tcp).some((upstream) => typeof upstream !== "string")
+    ) {
+      throw invalid(
+        label,
+        configPath,
+        `field "network.tcp" must be an object mapping guest hosts to "host:port" strings`,
+      );
+    }
+  }
+  if ("secrets" in network) {
+    const secrets = network.secrets;
+    if (secrets === null || typeof secrets !== "object" || Array.isArray(secrets)) {
+      throw invalid(label, configPath, `field "network.secrets" must be an object`);
+    }
+    for (const [name, secret] of Object.entries(secrets)) {
+      if (secret === null || typeof secret !== "object") {
+        throw invalid(label, configPath, `field "network.secrets.${name}" must be an object`);
+      }
+      requireStringArray(secret.hosts, `network.secrets.${name}.hosts`, label, configPath);
+      if ("fromEnv" in secret && typeof secret.fromEnv !== "string") {
+        throw invalid(
+          label,
+          configPath,
+          `field "network.secrets.${name}.fromEnv" must be a string`,
+        );
+      }
+    }
+  }
+}
+
 export function parseConfigFile(configPath: string, label: string): ProjectConfig {
   let raw: string;
   try {
     raw = fs.readFileSync(configPath, "utf8");
-  } catch {
-    return {};
+  } catch (error) {
+    // A missing file reads as "no configuration". Any other read failure
+    // (permissions, a directory at the path) must surface, or the file's
+    // settings would be silently dropped.
+    const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+    if (code === "ENOENT" || code === "ENOTDIR") return {};
+    throw new ConfigError(
+      `Echoriad: could not read ${label} (${configPath}): ` +
+        `${error instanceof Error ? error.message : String(error)}`,
+      configPath,
+    );
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch (error) {
-    throw new Error(`Echoriad: invalid ${label} (${configPath}): ${(error as Error).message}`);
+    throw invalid(
+      label,
+      configPath,
+      `not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error(`Echoriad: ${label} (${configPath}) must be a JSON object`);
+    throw invalid(label, configPath, "the configuration must be a JSON object");
   }
   const config = parsed as ProjectConfig;
 
   if ("image" in config && "buildConfig" in config) {
-    throw new Error(
-      `Echoriad: ${label} (${configPath}) defines both "image" and "buildConfig"; ` +
+    throw invalid(
+      label,
+      configPath,
+      `defines both "image" and "buildConfig"; ` +
         `a configuration file may define only one image selector`,
     );
   }
   if ("buildConfig" in config) {
     if (typeof config.buildConfig !== "string" || config.buildConfig.trim() === "") {
-      throw new Error(
-        `Echoriad: ${label} (${configPath}) field "buildConfig" must be a non-empty string ` +
+      throw invalid(
+        label,
+        configPath,
+        `field "buildConfig" must be a non-empty string ` +
           `containing a path to a Gondolin build config`,
       );
     }
+  }
+  if ("image" in config) {
+    if (typeof config.image !== "string" || config.image.trim() === "") {
+      throw invalid(label, configPath, `field "image" must be a non-empty string`);
+    }
+  }
+  if ("cpus" in config && (typeof config.cpus !== "number" || !Number.isInteger(config.cpus))) {
+    throw invalid(label, configPath, `field "cpus" must be an integer`);
+  }
+  if ("memory" in config && typeof config.memory !== "string") {
+    throw invalid(
+      label,
+      configPath,
+      `field "memory" must be a string in QEMU size syntax (for example "2G")`,
+    );
+  }
+  if (
+    "mounts" in config &&
+    (config.mounts === null || typeof config.mounts !== "object" || Array.isArray(config.mounts))
+  ) {
+    throw invalid(
+      label,
+      configPath,
+      `field "mounts" must be an object mapping guest paths to mount configurations`,
+    );
+  }
+  if ("network" in config) {
+    validateNetwork(config.network, label, configPath);
   }
   return config;
 }
@@ -113,9 +230,10 @@ export function loadSystemConfig(): ProjectConfig {
  * The selected guest image source, after applying selector precedence.
  *
  * `buildConfig` paths resolve against the directory of the configuration
- * that declared them; relative `image` paths keep resolving against the
- * declaring directory too (or `process.cwd()` for the env var, matching
- * Gondolin's own resolvePathSelector() behaviour).
+ * that declared them. An `image` value resolves against the declaring
+ * directory too (`process.cwd()` for the env var) when that joined path
+ * exists and is a directory, mirroring Gondolin's own resolvePathSelector();
+ * otherwise it passes through as a `name:tag`-style selector.
  */
 export type ImageSelection =
   | { kind: "buildConfig"; configPath: string; origin: "project" | "system" }

@@ -222,7 +222,7 @@ function testDeps(overrides: {
         overrides.existingRefs?.add(command.imageRef);
       },
       makeOutputDir: () => {
-        const dir = fs.mkdtempSync(path.join("/tmp", "echoriad-test-out-"));
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), "echoriad-test-out-"));
         outputDirs.push(dir);
         return dir;
       },
@@ -256,8 +256,9 @@ function matchingAssociation(
   };
 }
 
-test("approval denial stops startup before building or selecting", async () => {
-  const { dir } = { dir: fs.mkdtempSync(path.join("/tmp", "echoriad-gi-")) };
+test("approval denial stops startup before building or selecting", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "echoriad-gi-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const configPath = writeBuildConfig(dir, baseConfig());
   const builtCommands: BuiltCommand[] = [];
   const approvals: { action: string; summary: string }[] = [];
@@ -285,8 +286,9 @@ test("approval denial stops startup before building or selecting", async () => {
   assert.equal(written.length, 0);
 });
 
-test("noninteractive sessions fail closed before building", async () => {
-  const { dir } = { dir: fs.mkdtempSync(path.join("/tmp", "echoriad-gi-")) };
+test("noninteractive sessions fail closed before building", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "echoriad-gi-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const configPath = writeBuildConfig(dir, baseConfig());
   const builtCommands: BuiltCommand[] = [];
   const { deps } = testDeps({ builtCommands, existingRefs: new Set() });
@@ -314,8 +316,9 @@ test("noninteractive sessions fail closed before building", async () => {
   assert.equal(builtCommands.length, 0);
 });
 
-test("successful build starts the VM from the imported image build id and records authorization", async () => {
-  const { dir } = { dir: fs.mkdtempSync(path.join("/tmp", "echoriad-gi-")) };
+test("successful build starts the VM from the imported image build id and records authorization", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "echoriad-gi-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const configPath = writeBuildConfig(dir, baseConfig());
   const builtCommands: BuiltCommand[] = [];
   const refs = new Set<string>();
@@ -338,15 +341,16 @@ test("successful build starts the VM from the imported image build id and record
   assert.equal(builtCommands[0]!.configPath, configPath);
   assert.equal(builtCommands[0]!.imageRef, result.imageRef);
   // unique temporary output directory, removed afterwards
-  assert.ok(builtCommands[0]!.outputDir.startsWith("/tmp/echoriad-test-out-"));
+  assert.ok(builtCommands[0]!.outputDir.startsWith(path.join(os.tmpdir(), "echoriad-test-out-")));
   assert.equal(fs.existsSync(builtCommands[0]!.outputDir), false);
   // the successful build is recorded as an authorization association
   assert.deepEqual(written, [matchingAssociation()]);
   void refs;
 });
 
-test("a new consumer reusing a globally cached image needs approval first", async () => {
-  const { dir } = { dir: fs.mkdtempSync(path.join("/tmp", "echoriad-gi-")) };
+test("a new consumer reusing a globally cached image needs approval first", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "echoriad-gi-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const configPath = writeBuildConfig(dir, baseConfig());
   const builtCommands: BuiltCommand[] = [];
   const refs = new Set<string>([imageRefForFingerprint(FINGERPRINT)]);
@@ -377,8 +381,9 @@ test("a new consumer reusing a globally cached image needs approval first", asyn
   assert.deepEqual(written, [matchingAssociation()]);
 });
 
-test("denial of a cached-image reuse stops startup without building", async () => {
-  const { dir } = { dir: fs.mkdtempSync(path.join("/tmp", "echoriad-gi-")) };
+test("denial of a cached-image reuse stops startup without building", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "echoriad-gi-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const configPath = writeBuildConfig(dir, baseConfig());
   const builtCommands: BuiltCommand[] = [];
   const refs = new Set<string>([imageRefForFingerprint(FINGERPRINT)]);
@@ -400,8 +405,9 @@ test("denial of a cached-image reuse stops startup without building", async () =
   assert.equal(written.length, 0);
 });
 
-test("an authorized association reuses a valid image silently", async () => {
-  const { dir } = { dir: fs.mkdtempSync(path.join("/tmp", "echoriad-gi-")) };
+test("an authorized association reuses a valid image silently", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "echoriad-gi-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const configPath = writeBuildConfig(dir, baseConfig());
   const builtCommands: BuiltCommand[] = [];
   const refs = new Set<string>([imageRefForFingerprint(FINGERPRINT)]);
@@ -436,8 +442,43 @@ test("an authorized association reuses a valid image silently", async () => {
   assert.equal(written.length, 0);
 });
 
-test("a noninteractive session reuses an authorized image without prompting", async () => {
-  const { dir } = { dir: fs.mkdtempSync(path.join("/tmp", "echoriad-gi-")) };
+test("a stale build ID in the association prompts before silent reuse", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "echoriad-gi-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const configPath = writeBuildConfig(dir, baseConfig());
+  // The fingerprint's image still resolves, but to a different build ID
+  // than the association recorded (a same-fingerprint rebuild happened).
+  const refs = new Set<string>([imageRefForFingerprint(FINGERPRINT)]);
+  const approvals: { action: string; summary: string }[] = [];
+  const { deps, written } = testDeps({
+    existingRefs: refs,
+    authorizations: [matchingAssociation({ buildId: "stale-build-id" })],
+  });
+  const result = await prepareGuestImage({
+    configPath,
+    projectRoot: "/proj",
+    consumer: "project (/proj)",
+    consumerId: CONSUMER_ID,
+    configId: CONFIG_ID,
+    interactive: true,
+    approve: async (action, summary) => {
+      approvals.push({ action, summary });
+      return true;
+    },
+    deps,
+  });
+  // A build ID mismatch is not authorized for silent reuse: the consumer
+  // is prompted, and approval re-records the current build ID.
+  assert.equal(approvals.length, 1);
+  assert.equal(approvals[0]!.action, "reuse");
+  assert.equal(result.built, false);
+  assert.equal(result.imageSelector, "existing-build-id");
+  assert.deepEqual(written, [matchingAssociation()]);
+});
+
+test("a noninteractive session reuses an authorized image without prompting", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "echoriad-gi-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const configPath = writeBuildConfig(dir, baseConfig());
   const builtCommands: BuiltCommand[] = [];
   const refs = new Set<string>([imageRefForFingerprint(FINGERPRINT)]);
@@ -465,8 +506,9 @@ test("a noninteractive session reuses an authorized image without prompting", as
   assert.equal(result.imageSelector, "existing-build-id");
 });
 
-test("a missing Gondolin object prompts and rebuilds despite an authorized association", async () => {
-  const { dir } = { dir: fs.mkdtempSync(path.join("/tmp", "echoriad-gi-")) };
+test("a missing Gondolin object prompts and rebuilds despite an authorized association", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "echoriad-gi-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const configPath = writeBuildConfig(dir, baseConfig());
   const builtCommands: BuiltCommand[] = [];
   // The association exists, but the image object behind the fingerprint
@@ -502,8 +544,9 @@ test("a missing Gondolin object prompts and rebuilds despite an authorized assoc
   assert.deepEqual(written, [matchingAssociation()]);
 });
 
-test("cache deletion (empty authorization state) prompts again before reuse", async () => {
-  const { dir } = { dir: fs.mkdtempSync(path.join("/tmp", "echoriad-gi-")) };
+test("cache deletion (empty authorization state) prompts again before reuse", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "echoriad-gi-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const configPath = writeBuildConfig(dir, baseConfig());
   const builtCommands: BuiltCommand[] = [];
   // The image still exists globally, but the authorization metadata is
@@ -529,8 +572,9 @@ test("cache deletion (empty authorization state) prompts again before reuse", as
   assert.equal(result.built, false);
 });
 
-test("build failure stops startup, notifies the output tail, and removes the temporary output directory", async () => {
-  const { dir } = { dir: fs.mkdtempSync(path.join("/tmp", "echoriad-gi-")) };
+test("build failure stops startup, notifies the output tail, and removes the temporary output directory", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "echoriad-gi-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const configPath = writeBuildConfig(dir, baseConfig());
   const { deps, outputDirs } = testDeps({ failBuild: true, existingRefs: new Set() });
   const failureTails: string[] = [];
@@ -559,9 +603,10 @@ test("build failure stops startup, notifies the output tail, and removes the tem
   assert.equal(fs.existsSync(outputDirs[0]!), false);
 });
 
-test("the real build path routes the output tail to onBuildFailure", async () => {
+test("the real build path routes the output tail to onBuildFailure", async (t) => {
   // Drive runGondolinBuild through deps.build with a command that exits 1.
-  const { dir } = { dir: fs.mkdtempSync(path.join("/tmp", "echoriad-gi-")) };
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "echoriad-gi-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const configPath = writeBuildConfig(dir, baseConfig());
   const { deps } = testDeps({ existingRefs: new Set() });
   const failureTails: string[] = [];
@@ -608,8 +653,8 @@ process.exit(3);`,
   }
 }
 
-test("missing and non-file build configs fail with actionable errors", async () => {
-  const missing = path.join("/tmp", "echoriad-gi-missing-config.json");
+test("missing and non-file build configs fail with actionable errors", async (t) => {
+  const missing = path.join(os.tmpdir(), "echoriad-gi-missing-config.json");
   const { deps } = testDeps({ existingRefs: new Set() });
   await assert.rejects(
     prepareGuestImage({
@@ -626,7 +671,8 @@ test("missing and non-file build configs fail with actionable errors", async () 
       error.message.includes(missing) && error.message.includes("does not exist"),
   );
 
-  const dir = fs.mkdtempSync(path.join("/tmp", "echoriad-gi-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "echoriad-gi-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   await assert.rejects(
     prepareGuestImage({
       configPath: dir,
@@ -642,8 +688,9 @@ test("missing and non-file build configs fail with actionable errors", async () 
   );
 });
 
-test("build configs rejected by Gondolin fail with an actionable error", async () => {
-  const { dir } = { dir: fs.mkdtempSync(path.join("/tmp", "echoriad-gi-")) };
+test("build configs rejected by Gondolin fail with an actionable error", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "echoriad-gi-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const configPath = path.join(dir, "build-config.json");
   fs.writeFileSync(configPath, JSON.stringify({ arch: "sparc", distro: "alpine" }));
   const { deps } = testDeps({ existingRefs: new Set() });
@@ -666,8 +713,9 @@ test("build configs rejected by Gondolin fail with an actionable error", async (
   );
 });
 
-test("prepareGuestImage parses and fingerprints the real config end to end", async () => {
-  const dir = fs.mkdtempSync(path.join("/tmp", "echoriad-gi-e2e-"));
+test("prepareGuestImage parses and fingerprints the real config end to end", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "echoriad-gi-e2e-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   fs.writeFileSync(path.join(dir, "init.sh"), "echo hi\n");
   const config: BuildConfig = {
     ...baseConfig(),
@@ -766,7 +814,7 @@ test("concurrent builds stay independent: duplicate builds are accepted, each wi
       approve: async () => true,
       deps: {
         ...deps,
-        makeOutputDir: () => `/tmp/echoriad-unique-${++sequence}`,
+        makeOutputDir: () => path.join(os.tmpdir(), `echoriad-unique-${++sequence}`),
         build: async (command) => {
           usedOutputDirs.push(command.outputDir);
           await deps.build(command);

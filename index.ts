@@ -129,12 +129,27 @@ import {
   loadProjectConfig,
   loadSystemConfig,
   type MemoryMountConfig,
+  type ProjectConfig,
   resolveImageSelection,
 } from "./src/config.ts";
 import { GuestImageError, prepareGuestImage } from "./src/guest-image.ts";
 
 const GUEST_WORKSPACE = "/workspace";
 const DEFAULT_GREP_LIMIT = 100;
+/** Bounds the guest walk when a symlink cycle exists under the search root. */
+const MAX_WALK_DEPTH = 32;
+
+/**
+ * Errors from resolving user configuration into VM options — mount path
+ * validation, environment expansion, secret wiring. Startup details stay
+ * in human-facing channels; the tool layer reports only the category.
+ */
+class EchoriadError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "EchoriadError";
+  }
+}
 
 type TextToolResult<TDetails> = {
   content: Array<{ type: "text"; text: string }>;
@@ -265,8 +280,16 @@ async function walkGuestFiles(
   const stat = await vm.fs.stat(root, { signal });
   if (!stat.isDirectory()) return visit(root, path.posix.basename(root));
 
-  const walkDirectory = async (dir: string, relativeDir: string): Promise<boolean> => {
+  const walkDirectory = async (
+    dir: string,
+    relativeDir: string,
+    depth: number,
+  ): Promise<boolean> => {
     if (signal?.aborted) throw new Error("Operation aborted");
+    // The guest FS exposes no lstat, so symlinked directories cannot be
+    // distinguished from real ones; the depth cap bounds the traversal when
+    // a symlink cycle exists under the search root.
+    if (depth > MAX_WALK_DEPTH) return true;
     const entries = await vm.fs.listDir(dir, { signal });
     for (const entry of entries) {
       if (entry === ".git" || entry === "node_modules") continue;
@@ -279,7 +302,7 @@ async function walkGuestFiles(
         continue;
       }
       if (entryStat.isDirectory()) {
-        if (!(await walkDirectory(guestPath, relativePath))) return false;
+        if (!(await walkDirectory(guestPath, relativePath, depth + 1))) return false;
       } else if (!(await visit(guestPath, relativePath))) {
         return false;
       }
@@ -287,7 +310,7 @@ async function walkGuestFiles(
     return true;
   };
 
-  return walkDirectory(root, "");
+  return walkDirectory(root, "", 0);
 }
 
 function matchesToolGlob(relativePath: string, pattern: string): boolean {
@@ -521,7 +544,7 @@ function expandEnvAndTilde(rawPath: string): string {
       const varName = name1 || name2;
       const value = process.env[varName];
       if (value === undefined) {
-        throw new Error(
+        throw new EchoriadError(
           `Echoriad: environment variable "${varName}" in mount path "${rawPath}" is not set`,
         );
       }
@@ -545,11 +568,13 @@ function resolveHostPath(projectRoot: string, rawPath: string): string {
 
 function validateHostDirectory(rawPath: string, hostPath: string): void {
   if (!fs.existsSync(hostPath)) {
-    throw new Error(`Echoriad: host mount path does not exist: ${rawPath} (${hostPath})`);
+    throw new EchoriadError(`Echoriad: host mount path does not exist: ${rawPath} (${hostPath})`);
   }
   const stat = fs.statSync(hostPath);
   if (!stat.isDirectory()) {
-    throw new Error(`Echoriad: host mount path is not a directory: ${rawPath} (${hostPath})`);
+    throw new EchoriadError(
+      `Echoriad: host mount path is not a directory: ${rawPath} (${hostPath})`,
+    );
   }
 }
 
@@ -558,8 +583,7 @@ type ResolvedMounts = {
   hostMounts: HostMountMapping[];
 };
 
-function resolveMounts(projectRoot: string): ResolvedMounts {
-  const config = loadProjectConfig(projectRoot);
+function resolveMounts(projectRoot: string, config: ProjectConfig): ResolvedMounts {
   const vfsMounts: Record<string, VirtualProvider> = {
     [GUEST_WORKSPACE]: new RealFSProvider(projectRoot),
   };
@@ -567,16 +591,14 @@ function resolveMounts(projectRoot: string): ResolvedMounts {
   hostMountMap.set(GUEST_WORKSPACE, projectRoot);
 
   if (config.mounts) {
-    if (typeof config.mounts !== "object" || Array.isArray(config.mounts)) {
-      throw new Error(`Echoriad: "mounts" configuration must be an object`);
-    }
-
     for (const [rawGuestPath, mountDef] of Object.entries(config.mounts)) {
       const guestPath = path.posix.resolve("/", toPosix(rawGuestPath));
 
       if (typeof mountDef === "string") {
         if (!mountDef.trim()) {
-          throw new Error(`Echoriad: host mount path for "${rawGuestPath}" must not be empty`);
+          throw new EchoriadError(
+            `Echoriad: host mount path for "${rawGuestPath}" must not be empty`,
+          );
         }
         const hostPath = resolveHostPath(projectRoot, mountDef);
         validateHostDirectory(mountDef, hostPath);
@@ -584,7 +606,7 @@ function resolveMounts(projectRoot: string): ResolvedMounts {
         hostMountMap.set(guestPath, hostPath);
       } else if (mountDef && typeof mountDef === "object" && !Array.isArray(mountDef)) {
         if (mountDef.readonly !== undefined && typeof mountDef.readonly !== "boolean") {
-          throw new Error(
+          throw new EchoriadError(
             `Echoriad: "readonly" option for mount "${rawGuestPath}" must be a boolean`,
           );
         }
@@ -593,7 +615,7 @@ function resolveMounts(projectRoot: string): ResolvedMounts {
         if (type === "host") {
           const hostMount = mountDef as HostMountConfig;
           if (!hostMount.path || typeof hostMount.path !== "string" || !hostMount.path.trim()) {
-            throw new Error(
+            throw new EchoriadError(
               `Echoriad: host mount for "${rawGuestPath}" requires a non-empty string "path" property`,
             );
           }
@@ -614,12 +636,12 @@ function resolveMounts(projectRoot: string): ResolvedMounts {
           vfsMounts[guestPath] = provider;
           hostMountMap.delete(guestPath);
         } else {
-          throw new Error(
+          throw new EchoriadError(
             `Echoriad: unknown mount type "${type}" for "${rawGuestPath}" (expected "host" or "memory")`,
           );
         }
       } else {
-        throw new Error(`Echoriad: invalid mount configuration for "${rawGuestPath}"`);
+        throw new EchoriadError(`Echoriad: invalid mount configuration for "${rawGuestPath}"`);
       }
     }
   }
@@ -640,6 +662,11 @@ type AutomaticBuildReport = {
   built: boolean;
 };
 
+type LoadedConfigs = {
+  project: ProjectConfig;
+  system: ProjectConfig;
+};
+
 type ResolvedImageStartup = {
   imagePath?: string;
   imageLabel: string;
@@ -654,40 +681,31 @@ type ResolvedImageStartup = {
  */
 async function resolveImageStartup(
   projectRoot: string,
+  configs: LoadedConfigs,
   ctx?: ExtensionContext,
   signal?: AbortSignal,
 ): Promise<ResolvedImageStartup> {
-  const project = loadProjectConfig(projectRoot);
-  const system = loadSystemConfig();
-
-  const selection = resolveImageSelection(project, system, projectRoot);
+  const selection = resolveImageSelection(configs.project, configs.system, projectRoot);
 
   if (selection.kind === "default") {
     return { imageLabel: "default" };
   }
 
   if (selection.kind === "image") {
-    // Precedence: project config > system config > env var. Relative image
-    // paths resolve against the base dir of whichever source supplied them
-    // (the directory containing the config file, or process.cwd() for the
-    // env var, matching Gondolin's own resolvePathSelector() behaviour).
+    // Precedence: project config > system config > env var. Like Gondolin's
+    // own resolvePathSelector(), an image value that resolves against the
+    // declaring directory to an existing directory is a path; anything else
+    // passes through as a "name:tag"-style selector. There is no dot-prefix
+    // requirement, so a system config can declare "image": "images/base".
     const image = selection.value;
-    if (image.startsWith(".")) {
-      const resolved = path.resolve(selection.baseDir, image);
-      let isDir = false;
-      try {
-        isDir = fs.statSync(resolved).isDirectory();
-      } catch {
-        isDir = false;
-      }
-      if (!isDir) {
-        throw new Error(
-          `Echoriad: image path "${image}" (resolved to ${resolved}) does not exist or is not a directory. ` +
-            `Use a "name:tag" selector or a directory containing vmlinuz-virt, initramfs.cpio.lz4, rootfs.ext4.`,
-        );
-      }
-      return { imagePath: resolved, imageLabel: image };
+    const resolved = path.resolve(selection.baseDir, image);
+    let isDirectory = false;
+    try {
+      isDirectory = fs.statSync(resolved).isDirectory();
+    } catch {
+      isDirectory = false;
     }
+    if (isDirectory) return { imagePath: resolved, imageLabel: image };
     return { imagePath: image, imageLabel: image };
   }
 
@@ -761,14 +779,14 @@ async function resolveImageStartup(
 
 function resolveVmOptions(
   projectRoot: string,
+  configs: LoadedConfigs,
   image: ResolvedImageStartup,
 ): {
   options: VMOptions;
   imageLabel: string;
   hostMounts: HostMountMapping[];
 } {
-  const project = loadProjectConfig(projectRoot);
-  const system = loadSystemConfig();
+  const { project, system } = configs;
 
   const cpus = project.cpus ?? system.cpus;
   const memory = project.memory ?? system.memory;
@@ -777,11 +795,11 @@ function resolveVmOptions(
   if (image.imagePath) {
     sandbox.imagePath = image.imagePath;
   }
-  if (typeof cpus === "number") sandbox.cpus = cpus;
-  if (typeof memory === "string") sandbox.memory = memory;
+  if (cpus !== undefined) sandbox.cpus = cpus;
+  if (memory !== undefined) sandbox.memory = memory;
 
   const network = project.network ?? {};
-  const { vfsMounts, hostMounts } = resolveMounts(projectRoot);
+  const { vfsMounts, hostMounts } = resolveMounts(projectRoot, project);
   const options: VMOptions = {
     sessionLabel: `pi ${path.basename(projectRoot)}`,
     sandbox,
@@ -803,7 +821,7 @@ function resolveVmOptions(
       const envName = def.fromEnv ?? name;
       const value = process.env[envName];
       if (typeof value !== "string") {
-        throw new Error(
+        throw new EchoriadError(
           `Echoriad: secret "${name}" references host env var "${envName}" which is not set`,
         );
       }
@@ -839,7 +857,6 @@ export default function (pi: ExtensionAPI) {
 
   let vm: VM | undefined;
   let vmStarting: Promise<VM> | undefined;
-  let startupController: AbortController | undefined;
   const shutdownController = new AbortController();
   let permanentStartupError: string | undefined;
   let resolvedImage: ResolvedImageStartup | undefined;
@@ -855,16 +872,22 @@ export default function (pi: ExtensionAPI) {
     // Resolve the image source first: a selected build config is approved,
     // fingerprinted, and built (or reused) before the VM is created. The
     // result is memoized so a transient VM-creation failure does not prompt
-    // (or rebuild) again on the next startup attempt.
+    // (or rebuild) again on the next startup attempt. The configs are read
+    // once per startup attempt so image selection, mounts, and network all
+    // see the same file contents.
+    const configs: LoadedConfigs = {
+      project: loadProjectConfig(localCwd),
+      system: loadSystemConfig(),
+    };
     if (!resolvedImage) {
-      resolvedImage = await resolveImageStartup(localCwd, ctx, signal);
+      resolvedImage = await resolveImageStartup(localCwd, configs, ctx, signal);
     }
     signal.throwIfAborted();
     const {
       options: vmOptions,
       imageLabel: resolvedImageLabel,
       hostMounts: resolvedHostMounts,
-    } = resolveVmOptions(localCwd, resolvedImage);
+    } = resolveVmOptions(localCwd, configs, resolvedImage);
     imageLabel = resolvedImageLabel;
     hostMounts = resolvedHostMounts;
     const created = await VM.create(vmOptions);
@@ -886,16 +909,17 @@ export default function (pi: ExtensionAPI) {
     return created;
   }
 
-  async function ensureVm(ctx?: ExtensionContext, signal = ctx?.signal): Promise<VM> {
+  async function ensureVm(ctx?: ExtensionContext, signal?: AbortSignal): Promise<VM> {
     const unavailable = () =>
       new Error("Echoriad: guest unavailable; see human-facing diagnostics.");
     if (shutdownController.signal.aborted || signal?.aborted) throw unavailable();
     if (vm) return vm;
     if (permanentStartupError) throw unavailable();
     if (!vmStarting) {
-      startupController = new AbortController();
-      const startupSignal = AbortSignal.any([startupController.signal, shutdownController.signal]);
-      vmStarting = startVm(ctx, startupSignal)
+      // Startup is bound to the session-scoped shutdown signal only: a
+      // per-tool-call signal never cancels the shared startup, which would
+      // kill an in-flight build and every concurrent waiter with it.
+      vmStarting = startVm(ctx, shutdownController.signal)
         .catch((error) => {
           if (error instanceof GuestImageError && error.permanent) {
             permanentStartupError = error.message;
@@ -907,17 +931,19 @@ export default function (pi: ExtensionAPI) {
         })
         .finally(() => {
           vmStarting = undefined;
-          startupController = undefined;
         });
     }
-    const controller = startupController;
-    const cancel = () => controller?.abort();
-    signal?.addEventListener("abort", cancel, { once: true });
-    if (signal?.aborted) cancel();
+    const starting = vmStarting;
+    if (!signal) return starting;
+    // Wait for the shared startup without owning it: an aborted tool call
+    // stops only itself, and the abandoned promise stays observed.
+    const caller = new Promise<never>((_, reject) => {
+      signal.addEventListener("abort", () => reject(unavailable()), { once: true });
+    });
     try {
-      return await vmStarting;
+      return await Promise.race([starting, caller]);
     } finally {
-      signal?.removeEventListener("abort", cancel);
+      starting.catch(() => {});
     }
   }
 
@@ -985,7 +1011,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     ...localWrite,
     async execute(id, params, signal, onUpdate, ctx) {
-      const activeVm = await ensureVm(ctx);
+      const activeVm = await ensureVm(ctx, signal);
       const tool = createWriteTool(GUEST_WORKSPACE, {
         operations: createEchoriadWriteOps(activeVm, localCwd, hostMounts),
       });
@@ -996,7 +1022,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     ...localEdit,
     async execute(id, params, signal, onUpdate, ctx) {
-      const activeVm = await ensureVm(ctx);
+      const activeVm = await ensureVm(ctx, signal);
       const tool = createEditTool(GUEST_WORKSPACE, {
         operations: createEchoriadEditOps(activeVm, localCwd, hostMounts),
       });
@@ -1007,7 +1033,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     ...localBash,
     async execute(id, params, signal, onUpdate, ctx) {
-      const activeVm = await ensureVm(ctx);
+      const activeVm = await ensureVm(ctx, signal);
       const tool = createBashTool(GUEST_WORKSPACE, {
         operations: createEchoriadBashOps(activeVm, localCwd, shellPath, hostMounts),
       });
@@ -1018,7 +1044,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     ...localLs,
     async execute(id, params, signal, onUpdate, ctx) {
-      const activeVm = await ensureVm(ctx);
+      const activeVm = await ensureVm(ctx, signal);
       const tool = createLsTool(GUEST_WORKSPACE, {
         operations: createEchoriadLsOps(activeVm, localCwd, hostMounts),
       });
@@ -1029,7 +1055,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     ...localFind,
     async execute(id, params, signal, onUpdate, ctx) {
-      const activeVm = await ensureVm(ctx);
+      const activeVm = await ensureVm(ctx, signal);
       const tool = createFindTool(GUEST_WORKSPACE, {
         operations: createEchoriadFindOps(activeVm, localCwd, hostMounts),
       });

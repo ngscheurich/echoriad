@@ -56,7 +56,16 @@ export type LocalInputNode =
   | { type: "symlink"; target: string }
   | { type: "directory"; entries: Record<string, LocalInputNode> };
 
-/** Local input paths declared by a build config, as written in the config. */
+/**
+ * Local input paths declared by a build config, as written in the config.
+ *
+ * The set mirrors Gondolin's BuildConfig fields that name host paths, and
+ * it was reviewed against gondolin 0.12.0 (pinned by the gondolinVersion
+ * test). A field missing here fails open: the fingerprint stops changing
+ * when that input changes, and an authorized consumer silently reuses a
+ * stale image built without it. Re-review this list on every Gondolin
+ * version bump before updating the pinned-version assertion.
+ */
 export function declaredLocalInputPaths(config: BuildConfig): string[] {
   const declared: string[] = [];
   if (config.init?.rootfsInit) declared.push(config.init.rootfsInit);
@@ -77,7 +86,20 @@ export function declaredLocalInputPaths(config: BuildConfig): string[] {
 
 function sha256File(filePath: string): string {
   const hash = crypto.createHash("sha256");
-  hash.update(fs.readFileSync(filePath));
+  const fd = fs.openSync(filePath, "r");
+  try {
+    // Stream in bounded chunks: the fingerprint runs before approval and
+    // may traverse multi-gigabyte inputs, which must never be resident all
+    // at once.
+    const buffer = Buffer.alloc(1024 * 1024);
+    for (;;) {
+      const read = fs.readSync(fd, buffer, 0, buffer.length, null);
+      if (read === 0) break;
+      hash.update(read === buffer.length ? buffer : buffer.subarray(0, read));
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
   return hash.digest("hex");
 }
 
