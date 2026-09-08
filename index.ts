@@ -717,6 +717,7 @@ type ResolvedImageStartup = {
 async function resolveImageStartup(
   projectRoot: string,
   ctx?: ExtensionContext,
+  signal?: AbortSignal,
 ): Promise<ResolvedImageStartup> {
   const project = loadProjectConfig(projectRoot);
   const system = loadSystemConfig();
@@ -769,6 +770,7 @@ async function resolveImageStartup(
     consumerId: identity.consumerId,
     configId: identity.configId,
     interactive: Boolean(ctx?.hasUI),
+    signal,
     approve: (action, summary) =>
       ctx
         ? ctx.ui.confirm(
@@ -776,6 +778,7 @@ async function resolveImageStartup(
               ? "Build Gondolin guest image?"
               : "Reuse cached Gondolin guest image?",
             summary,
+            { signal },
           )
         : Promise.resolve(false),
     onWarning: (message) => {
@@ -785,17 +788,22 @@ async function resolveImageStartup(
     onStatus: (message) =>
       ctx?.ui.setStatus("echoriad", `Echoriad: ${message}`),
     onBuildOutput: (chunk) => {
+      // Stream Gondolin's output to the human-facing status line only;
+      // it never enters model context. The latest line replaces the
+      // previous one instead of stacking a notification per chunk.
       const lastLine =
         chunk
           .split("\n")
           .map((line) => line.trim())
           .filter(Boolean)
           .pop() ?? "";
-      if (lastLine) {
-        ctx?.ui.setStatus(
+      if (ctx?.hasUI) {
+        ctx.ui.setStatus(
           "echoriad",
           `Echoriad: building guest image — ${lastLine.slice(0, 80)}`,
         );
+      } else {
+        process.stderr.write(chunk);
       }
     },
     onBuildFailure: (outputTail) => {
@@ -887,13 +895,15 @@ export default function (pi: ExtensionAPI) {
 
   let vm: VM | undefined;
   let vmStarting: Promise<VM> | undefined;
+  let startupController: AbortController | undefined;
+  const shutdownController = new AbortController();
   let permanentStartupError: string | undefined;
   let resolvedImage: ResolvedImageStartup | undefined;
   let shellPath = "/bin/sh";
   let imageLabel = "default";
   let hostMounts: HostMountMapping[] = [];
 
-  async function startVm(ctx?: ExtensionContext): Promise<VM> {
+  async function startVm(ctx: ExtensionContext | undefined, signal: AbortSignal): Promise<VM> {
     ctx?.ui.setStatus(
       "echoriad",
       ctx.ui.theme.fg("accent", `Echoriad: starting ${GUEST_WORKSPACE}`),
@@ -903,8 +913,9 @@ export default function (pi: ExtensionAPI) {
     // result is memoized so a transient VM-creation failure does not prompt
     // (or rebuild) again on the next startup attempt.
     if (!resolvedImage) {
-      resolvedImage = await resolveImageStartup(localCwd, ctx);
+      resolvedImage = await resolveImageStartup(localCwd, ctx, signal);
     }
+    signal.throwIfAborted();
     const {
       options: vmOptions,
       imageLabel: resolvedImageLabel,
@@ -913,6 +924,10 @@ export default function (pi: ExtensionAPI) {
     imageLabel = resolvedImageLabel;
     hostMounts = resolvedHostMounts;
     const created = await VM.create(vmOptions);
+    if (signal.aborted) {
+      await created.close();
+      signal.throwIfAborted();
+    }
     const bashProbe = await created.exec([
       "/bin/sh",
       "-lc",
@@ -934,22 +949,38 @@ export default function (pi: ExtensionAPI) {
     return created;
   }
 
-  async function ensureVm(ctx?: ExtensionContext): Promise<VM> {
+  async function ensureVm(ctx?: ExtensionContext, signal = ctx?.signal): Promise<VM> {
+    const unavailable = () => new Error("Echoriad: guest unavailable; see human-facing diagnostics.");
+    if (shutdownController.signal.aborted || signal?.aborted) throw unavailable();
     if (vm) return vm;
-    if (permanentStartupError) throw new Error(permanentStartupError);
+    if (permanentStartupError) throw unavailable();
     if (!vmStarting) {
-      vmStarting = startVm(ctx).catch((error) => {
-        // Fail closed: an approval denial or a noninteractive session must
-        // not re-prompt (and re-hash host inputs) on every later tool call.
+      startupController = new AbortController();
+      const startupSignal = AbortSignal.any([
+        startupController.signal, shutdownController.signal,
+      ]);
+      vmStarting = startVm(ctx, startupSignal).catch((error) => {
         if (error instanceof GuestImageError && error.permanent) {
           permanentStartupError = error.message;
         }
-        throw error;
+        // Startup details must never become tool errors in model context.
+        if (ctx?.hasUI) ctx.ui.notify(String(error), "error");
+        else process.stderr.write(String(error) + "\n");
+        throw unavailable();
       }).finally(() => {
         vmStarting = undefined;
+        startupController = undefined;
       });
     }
-    return vmStarting;
+    const controller = startupController;
+    const cancel = () => controller?.abort();
+    signal?.addEventListener("abort", cancel, { once: true });
+    if (signal?.aborted) cancel();
+    try {
+      return await vmStarting;
+    } finally {
+      signal?.removeEventListener("abort", cancel);
+    }
   }
 
   pi.on("session_start", async (_event, ctx) => {
@@ -957,9 +988,10 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {
+    shutdownController.abort();
+    await vmStarting?.catch(() => {});
     const activeVm = vm;
     vm = undefined;
-    vmStarting = undefined;
     if (!activeVm) return;
     ctx.ui.setStatus(
       "echoriad",
@@ -992,7 +1024,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     ...localRead,
     async execute(id, params, signal, onUpdate, ctx) {
-      const activeVm = await ensureVm(ctx);
+      const activeVm = await ensureVm(ctx, signal);
       const tool = createReadTool(GUEST_WORKSPACE, {
         operations: createEchoriadReadOps(activeVm, localCwd, hostMounts),
       });
@@ -1063,7 +1095,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     ...localGrep,
     async execute(_id, params, signal, _onUpdate, ctx) {
-      const activeVm = await ensureVm(ctx);
+      const activeVm = await ensureVm(ctx, signal);
       return executeEchoriadGrep(
         activeVm,
         localCwd,

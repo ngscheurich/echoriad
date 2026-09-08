@@ -717,3 +717,76 @@ test("prepareGuestImage parses and fingerprints the real config end to end", asy
   assert.match(result.fingerprint, /^[0-9a-f]{64}$/);
   assert.ok(result.imageRef.startsWith("echoriad-build-"));
 });
+
+test("build statuses include the fingerprint and completion; cancellation never authorizes an import", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "echoriad-lifecycle-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const configPath = writeBuildConfig(dir, baseConfig());
+  for (const cancel of [false, true]) {
+    const controller = new AbortController();
+    const refs = new Set<string>();
+    const { deps, written, outputDirs } = testDeps({ existingRefs: refs });
+    const statuses: string[] = [];
+    const promise = prepareGuestImage({
+      configPath, projectRoot: dir, consumer: "project",
+      consumerId: CONSUMER_ID, configId: CONFIG_ID, interactive: true,
+      approve: async () => true, signal: controller.signal,
+      onStatus: (s) => statuses.push(s),
+      deps: { ...deps, build: async (command) => {
+        await deps.build(command);
+        if (cancel) controller.abort();
+      } },
+    });
+    if (cancel) {
+      await assert.rejects(promise, /cancelled/);
+      assert.deepEqual(written, []);
+      assert.match(statuses.at(-1)!, /cancelled/);
+      assert.equal(refs.size, 1); // An imported object may remain, without authorization.
+    } else {
+      await promise;
+      assert.deepEqual(statuses, [
+        "building guest image ffffffffffff",
+        "guest image build complete ffffffffffff",
+      ]);
+      assert.equal(written.length, 1);
+    }
+    assert.ok(outputDirs.every((out) => !fs.existsSync(out)));
+  }
+});
+
+test("concurrent builds stay independent: duplicate builds are accepted, each with a unique output directory", async (t) => {
+  // The first release does not lock builds by fingerprint: two concurrent
+  // sessions may both build the same fingerprint. Each gets its own
+  // temporary output directory and its own authorization record. A local
+  // input changed between fingerprinting and Gondolin reading it is the
+  // accepted time-of-check/time-of-use race; builds run against the
+  // original approved paths.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "echoriad-concurrent-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const configPath = writeBuildConfig(dir, baseConfig());
+  const usedOutputDirs: string[] = [];
+  let sequence = 0;
+  const builds = [1, 2].map(() => {
+    const refs = new Set<string>();
+    const { deps, written } = testDeps({ existingRefs: refs });
+    return prepareGuestImage({
+      configPath, projectRoot: dir, consumer: "project",
+      consumerId: CONSUMER_ID, configId: CONFIG_ID, interactive: true,
+      approve: async () => true,
+      deps: {
+        ...deps,
+        makeOutputDir: () => `/tmp/echoriad-unique-${++sequence}`,
+        build: async (command) => {
+          usedOutputDirs.push(command.outputDir);
+          await deps.build(command);
+        },
+      },
+    });
+  });
+  const results = await Promise.all(builds);
+  assert.ok(results.every((result) => result.built));
+  // Every build gets a unique temporary output directory even when the
+  // fingerprint (and therefore the image reference) is identical.
+  assert.equal(new Set(usedOutputDirs).size, 2);
+  assert.equal(new Set(results.map((r) => r.imageRef)).size, 1);
+});

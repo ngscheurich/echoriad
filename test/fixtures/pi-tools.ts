@@ -1,0 +1,12 @@
+const tool = (name: string) => () => ({ name });
+export const createReadTool = tool("read");
+export const createWriteTool = tool("write");
+export const createEditTool = tool("edit");
+export const createBashTool = tool("bash");
+export const createLsTool = tool("ls");
+export const createFindTool = tool("find");
+export const createGrepTool = tool("grep");
+export const DEFAULT_MAX_BYTES = 50000;
+export const formatSize = String;
+export const truncateHead = (s: string) => ({ content: s });
+export const truncateLine = (s: string) => ({ text: s });

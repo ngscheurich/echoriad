@@ -227,6 +227,7 @@ export type PrepareGuestImageOptions = {
   /** build-config identity for authorization metadata */
   configId: string;
   interactive: boolean;
+  signal?: AbortSignal;
   approve: (action: ApprovalAction, summary: string) => Promise<boolean>;
   onStatus?: (message: string) => void;
   /** human-facing warnings, for example malformed authorization metadata */
@@ -252,6 +253,7 @@ export type GuestImageDeps = {
     command: BuildCommandInput,
     onOutput?: (chunk: string) => void,
     onBuildFailure?: (outputTail: string) => void,
+    signal?: AbortSignal,
   ) => Promise<void>;
   makeOutputDir: () => string;
   removeOutputDir: (dir: string) => void;
@@ -284,9 +286,7 @@ function defaultDeps(options: PrepareGuestImageOptions): GuestImageDeps {
       }
       return { buildId: resolved.buildId };
     },
-    build: async (command, onOutput) => {
-      await runGondolinBuild(command, onOutput);
-    },
+    build: runGondolinBuild,
     makeOutputDir: () =>
       fs.mkdtempSync(path.join(os.tmpdir(), "echoriad-build-")),
     removeOutputDir: (dir) => fs.rmSync(dir, { recursive: true, force: true }),
@@ -316,15 +316,46 @@ export function tailOfOutput(
   return tail.length > maxChars ? tail.slice(-maxChars) : tail;
 }
 
+function checkBuildCancellation(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw new GuestImageError("Echoriad: guest image build cancelled");
+  }
+}
+
 export async function runGondolinBuild(
   command: BuildCommandInput,
   onOutput?: (chunk: string) => void,
   onBuildFailure?: (outputTail: string) => void,
+  signal?: AbortSignal,
 ): Promise<void> {
+  checkBuildCancellation(signal);
   const args = buildCommandArgs(command);
   const child = spawn(process.execPath, args, {
     stdio: ["ignore", "pipe", "pipe"],
+    detached: true,
   });
+  let termination: Promise<void> | undefined;
+  const killGroup = (signal: NodeJS.Signals) => {
+    if (!child.pid) return;
+    try {
+      process.kill(-child.pid, signal);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+    }
+  };
+  const cancel = () => {
+    if (termination) return;
+    killGroup("SIGTERM");
+    // Escalate even if the leader exits: descendants may ignore SIGTERM.
+    termination = new Promise((resolve) => {
+      setTimeout(() => {
+        killGroup("SIGKILL");
+        resolve();
+      }, 1000);
+    });
+  };
+  signal?.addEventListener("abort", cancel, { once: true });
+  if (signal?.aborted) cancel();
   // Combined stdout/stderr, capped, kept only for the failure tail.
   let collected = "";
   const collect = (chunk: Buffer) => {
@@ -334,10 +365,17 @@ export async function runGondolinBuild(
   };
   child.stdout.on("data", collect);
   child.stderr.on("data", collect);
-  const exitCode: number = await new Promise((resolve, reject) => {
-    child.on("error", reject);
-    child.on("close", (code) => resolve(code ?? -1));
-  });
+  let exitCode: number;
+  try {
+    exitCode = await new Promise<number>((resolve, reject) => {
+      child.on("error", reject);
+      child.on("close", (code) => resolve(code ?? -1));
+    });
+  } finally {
+    signal?.removeEventListener("abort", cancel);
+    await termination;
+  }
+  checkBuildCancellation(signal);
   if (exitCode !== 0) {
     // The tail goes to a human-facing notification; the thrown error stays
     // short so the extension-error log does not repeat it.
@@ -367,6 +405,18 @@ export async function runGondolinBuild(
 export async function prepareGuestImage(
   options: PrepareGuestImageOptions,
 ): Promise<GuestImageResult> {
+  try {
+    return await prepareImage(options);
+  } catch (error) {
+    options.onStatus?.(options.signal?.aborted
+      ? "guest image build cancelled"
+      : "guest image preparation failed");
+    throw error;
+  }
+}
+
+async function prepareImage(options: PrepareGuestImageOptions): Promise<GuestImageResult> {
+  checkBuildCancellation(options.signal);
   const deps = { ...defaultDeps(options), ...options.deps };
 
   const { configPath } = options;
@@ -437,7 +487,7 @@ export async function prepareGuestImage(
 
   if (authorized && cached) {
     options.onStatus?.(
-      `reusing authorized guest image ${fp.abbreviatedFingerprint}`,
+      `reusing authorized guest image ${fp.abbreviated}`,
     );
     return result(cached, false);
   }
@@ -465,6 +515,7 @@ export async function prepareGuestImage(
     config,
   });
   const approved = await options.approve(action, summary);
+  checkBuildCancellation(options.signal);
   if (!approved) {
     throw new GuestImageError(
       "Echoriad: the guest image request was not approved; VM startup stopped.",
@@ -475,7 +526,7 @@ export async function prepareGuestImage(
   if (cached) {
     // Approval lets this consumer adopt the globally cached image.
     options.onStatus?.(
-      `reusing cached guest image ${fp.abbreviatedFingerprint}`,
+      `reusing cached guest image ${fp.abbreviated}`,
     );
     deps.writeAuthorization({
       consumer: options.consumerId,
@@ -486,24 +537,29 @@ export async function prepareGuestImage(
     return result(cached, false);
   }
 
-  options.onStatus?.(`building guest image ${fp.abbreviatedFingerprint}`);
+  options.onStatus?.(`building guest image ${fp.abbreviated}`);
+  checkBuildCancellation(options.signal);
   const outputDir = deps.makeOutputDir();
   try {
     await deps.build(
       { cliPath: resolveGondolinCli().cliPath, configPath, outputDir, imageRef },
       options.onBuildOutput,
       options.onBuildFailure,
+      options.signal,
     );
+    checkBuildCancellation(options.signal);
     // Only trust the image after the import is resolved to a build id, and
     // only record authorization after Gondolin imported the image and
     // Echoriad resolved it.
     const resolved = deps.resolveImage(imageRef);
+    checkBuildCancellation(options.signal);
     deps.writeAuthorization({
       consumer: options.consumerId,
       config: options.configId,
       fingerprint: fp.fingerprint,
       buildId: resolved.buildId,
     });
+    options.onStatus?.(`guest image build complete ${fp.abbreviated}`);
     return result(resolved, true);
   } finally {
     deps.removeOutputDir(outputDir);
