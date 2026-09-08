@@ -21,7 +21,7 @@ A host-side `echoriad` command-line interface over the guest-image pipeline that
 
 ## Relationship to the automatic-build-config spec
 
-That spec states "It does not manipulate Gondolin's private store layout" and issue 10 asks cleanup to use public Gondolin APIs. Gondolin 0.12.0 exposes no removal API, so this feature supersedes that constraint with a defended direct approach: `images remove` validates the expected store layout before acting, never touches refs outside the `echoriad-build-` prefix, and deletes an object only after rescanning all refs for stragglers. A probe failure refuses the command instead of guessing. If Gondolin later ships a removal API, `images remove` should move onto it.
+That spec states "It does not manipulate Gondolin's private store layout" and issue .tracker/automatic-build-config/issues/10-add-build-cache-commands.md asks cleanup to use public Gondolin APIs. Gondolin 0.12.0 exposes no removal API, so this feature supersedes that constraint — recorded in `docs/adrs/0002-remove-echoriad-images-through-the-private-store-layout.md` — with a defended direct approach: `images remove` validates the expected store layout before acting, never touches refs outside the `echoriad-build-` prefix, and deletes an object only after rescanning all refs for stragglers. A probe failure refuses the command instead of guessing. If Gondolin later ships a removal API, `images remove` should move onto it.
 
 ## Packaging and layout
 
