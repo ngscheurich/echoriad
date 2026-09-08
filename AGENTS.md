@@ -6,12 +6,16 @@ Echoriad is a Pi extension that lets developers run agent tools inside a Gondoli
 
 ```
 echoriad/
-├── index.ts                     # extension entrypoint — the Gondolin tool router
-├── src/                         # one module per extension concern
+├── index.ts                     # re-exports src/pi/ — the pi manifest entrypoint
+├── src/                         # shared core, one module per concern
 │   ├── authorization.ts         # build-approval associations, cached and revocable
 │   ├── config.ts                # config loading and image-source selection
 │   ├── fingerprint.ts           # semantic build-config fingerprints
-│   └── guest-image.ts           # automatic guest image builds and build cache
+│   ├── guest-image.ts           # automatic guest image builds and build cache
+│   ├── identity.ts              # consumer and build-config identity derivation
+│   ├── vm-spec.ts               # VM/sandbox spec construction from resolved config
+│   ├── pi/                      # the pi extension: Gondolin tool router
+│   └── cli/                     # the echoriad CLI
 ├── test/                        # node:test suites (run with npm test)
 │   └── fixtures/                # shared test fixtures
 ├── docs/
