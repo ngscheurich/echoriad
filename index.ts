@@ -704,9 +704,19 @@ function resolveMounts(projectRoot: string): ResolvedMounts {
   return { vfsMounts, hostMounts };
 }
 
+/** Automatic-build details `/echoriad` reports for a build-config startup. */
+type AutomaticBuildReport = {
+  configPath: string;
+  abbreviatedFingerprint: string;
+  buildId: string;
+  built: boolean;
+};
+
 type ResolvedImageStartup = {
   imagePath?: string;
   imageLabel: string;
+  /** present only when startup selected a build config, not a direct image */
+  build?: AutomaticBuildReport;
 };
 
 /**
@@ -813,7 +823,16 @@ async function resolveImageStartup(
       );
     },
   });
-  return { imagePath: result.imageSelector, imageLabel: result.imageRef };
+  return {
+    imagePath: result.imageSelector,
+    imageLabel: result.imageRef,
+    build: {
+      configPath: result.configPath,
+      abbreviatedFingerprint: result.abbreviatedFingerprint,
+      buildId: result.buildId,
+      built: result.built,
+    },
+  };
 }
 
 function resolveVmOptions(
@@ -1007,17 +1026,35 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("echoriad", {
     description: "Show Gondolin VM status",
     handler: async (_args, ctx) => {
-      const activeVm = await ensureVm(ctx);
-      ctx.ui.notify(
-        [
-          `Gondolin VM: ${activeVm.id}`,
-          `Host workspace: ${localCwd}`,
-          `Guest workspace: ${GUEST_WORKSPACE}`,
-          `Shell: ${shellPath}`,
-          `Image: ${imageLabel}`,
-        ].join("\n"),
-        "info",
-      );
+      let activeVm: VM;
+      try {
+        activeVm = await ensureVm(ctx);
+      } catch {
+        // Startup already reported the failure to humans; the command keeps
+        // host paths and build details out of its output.
+        ctx.ui.notify(
+          "Echoriad: guest unavailable; see human-facing diagnostics.",
+          "warning",
+        );
+        return;
+      }
+      const lines = [
+        `Gondolin VM: ${activeVm.id}`,
+        `Host workspace: ${localCwd}`,
+        `Guest workspace: ${GUEST_WORKSPACE}`,
+        `Shell: ${shellPath}`,
+        `Image: ${imageLabel}`,
+      ];
+      const build = resolvedImage?.build;
+      if (build) {
+        lines.push(
+          `Build config: ${build.configPath}`,
+          `Fingerprint: ${build.abbreviatedFingerprint}`,
+          `Gondolin build ID: ${build.buildId}`,
+          `Image source: ${build.built ? "built at startup" : "reused cached image"}`,
+        );
+      }
+      ctx.ui.notify(lines.join("\n"), "info");
     },
   });
 
