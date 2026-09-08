@@ -198,6 +198,31 @@ test("valid scalar and network fields parse", (t) => {
   assert.equal(parsed.memory, "2G");
 });
 
+test("the system config schema accepts a boolean plain field", (t) => {
+  const { write } = makeConfigDir(t);
+  const configPath = write(JSON.stringify({ plain: true }));
+  const parsed = parseConfigFile(configPath, "system config", "system");
+  assert.equal(parsed.plain, true);
+});
+
+test("a non-boolean plain field fails in the system config", (t) => {
+  const { write } = makeConfigDir(t);
+  const configPath = write(JSON.stringify({ plain: "yes" }));
+  assert.throws(
+    () => parseConfigFile(configPath, "system config", "system"),
+    /field "plain" must be a boolean/,
+  );
+});
+
+test("plain is not a project config field", (t) => {
+  const { write } = makeConfigDir(t);
+  const configPath = write(JSON.stringify({ plain: true }));
+  assert.throws(
+    () => parseConfigFile(configPath, "project config"),
+    /"plain" is only valid in the system config/,
+  );
+});
+
 test("an unreadable config file fails loudly; a missing one reads as absent", (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "echoriad-config-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));

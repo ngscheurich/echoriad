@@ -1,6 +1,6 @@
 # CLI entry, Clack dependency, and the ui seam
 
-Status: ready-for-agent
+Status: resolved
 
 Blocked by: 01
 
@@ -14,3 +14,21 @@ The CLI needs its entrypoint, its prompt library, and the single output seam tha
 - Command parsing: plain hand-rolled argv handling is fine unless a command's needs outgrow it; no argument-parser dependency without a stated reason.
 
 Unit-test plain resolution, error/cancel formatting, and the non-TTY gate without a TTY.
+
+## Comments
+
+Implemented on top of 01. `src/cli/ui.ts` owns every human-facing line:
+`resolvePlainMode` applies the precedence (env follows NO_COLOR — present
+and non-empty regardless of value), `createUi` writes through injected
+streams so tests capture output without a TTY, `requireInteractive` is
+the fail-closed gate prompt-requiring commands call before clack. The
+`error: `/`cancelled: ` formats live in ui.ts; `src/cli/index.ts` reuses
+them for the one case where output happens before a ui exists (a config
+load failure). One addition beyond the letter of the issue: `plain` in a
+project `.echoriad.json` is rejected outright, since output style is a
+system-wide preference and the lenient parser would otherwise silently
+ignore it. `echoriad.ts` calls `main()` rather than only re-exporting —
+the bin must execute, so the root entry sets `process.exitCode` from the
+returned code. `@clack/prompts` is installed but unimported; commands
+(03+) import it. Dispatch handlers register into the COMMANDS table in
+src/cli/index.ts as their modules land.

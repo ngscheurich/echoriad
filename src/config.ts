@@ -48,6 +48,15 @@ export type ProjectConfig = {
   mounts?: Record<string, MountConfig>;
 };
 
+/**
+ * The system config's schema: project fields plus the CLI's own `plain`
+ * switch. `plain` is not a project field — output style is a system-wide
+ * accessibility preference, not something a repo gets to set.
+ */
+export type SystemConfig = ProjectConfig & {
+  plain?: boolean;
+};
+
 export const CONFIG_PATH = ".echoriad.json";
 
 /** Errors from configuration reading, parsing, and validation. */
@@ -122,7 +131,19 @@ function validateNetwork(value: unknown, label: string, configPath: string): voi
   }
 }
 
-export function parseConfigFile(configPath: string, label: string): ProjectConfig {
+// Two overload signatures, because the schema decides the return type: a
+// system parse has validated "plain" as boolean, so callers get it typed.
+export function parseConfigFile(configPath: string, label: string, schema: "system"): SystemConfig;
+export function parseConfigFile(
+  configPath: string,
+  label: string,
+  schema?: "project",
+): ProjectConfig;
+export function parseConfigFile(
+  configPath: string,
+  label: string,
+  schema: "project" | "system" = "project",
+): ProjectConfig {
   let raw: string;
   try {
     raw = fs.readFileSync(configPath, "utf8");
@@ -199,6 +220,14 @@ export function parseConfigFile(configPath: string, label: string): ProjectConfi
   if ("network" in config) {
     validateNetwork(config.network, label, configPath);
   }
+  if ("plain" in config) {
+    if (schema !== "system") {
+      throw invalid(label, configPath, `field "plain" is only valid in the system config`);
+    }
+    if (typeof config.plain !== "boolean") {
+      throw invalid(label, configPath, `field "plain" must be a boolean`);
+    }
+  }
   return config;
 }
 
@@ -219,8 +248,8 @@ export function systemConfigPath(): string {
   return path.join(configDir(), "echoriad", "config.json");
 }
 
-export function loadSystemConfig(): ProjectConfig {
-  return parseConfigFile(systemConfigPath(), "system config");
+export function loadSystemConfig(): SystemConfig {
+  return parseConfigFile(systemConfigPath(), "system config", "system");
 }
 
 /**
