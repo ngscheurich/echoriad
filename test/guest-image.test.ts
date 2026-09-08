@@ -13,6 +13,7 @@ import {
   tailOfOutput,
   GuestImageError,
 } from "../src/guest-image.ts";
+import type { AuthorizationAssociation } from "../src/authorization.ts";
 import type { BuildConfig } from "@earendil-works/gondolin";
 import { parseBuildConfig } from "@earendil-works/gondolin";
 
@@ -93,12 +94,14 @@ test("approval summary shows consumer, project root, build config, and warnings"
     oci: { image: "example.com/base:1.2" },
   };
   const summary = buildApprovalSummary({
+    action: "build",
     consumer: "project (/proj)",
     projectRoot: "/proj",
     configPath: "/proj/build-config.json",
     localInputPaths: ["/proj/init.sh", "/etc/external/secret-helper"],
     config,
   });
+  assert.match(summary, /Action: build the guest image/);
   assert.match(summary, /Consumer: project \(\/proj\)/);
   assert.match(summary, /Project root: \/proj/);
   assert.match(summary, /Build config: \/proj\/build-config\.json/);
@@ -126,12 +129,14 @@ test("approval summary lists init scripts and sandbox helpers", () => {
     sandboxdPath: "sandboxd",
   };
   const summary = buildApprovalSummary({
+    action: "reuse",
     consumer: "system",
     projectRoot: "/proj",
     configPath: "/proj/build-config.json",
     localInputPaths: [],
     config,
   });
+  assert.match(summary, /Action: reuse the globally cached image/);
   assert.match(summary, /Init scripts: init\.sh/);
   assert.match(summary, /Sandbox helpers: sandboxd/);
   assert.match(summary, /Local inputs: none/);
@@ -189,13 +194,16 @@ test("privileged container warning appears only for container builds with postBu
 function testDeps(overrides: {
   config?: BuildConfig;
   approveResult?: boolean;
-  approveCalls?: string[];
+  approveCalls?: { action: string; summary: string }[];
   builtCommands?: { configPath: string; outputDir: string; imageRef: string }[];
   existingRefs?: Set<string>;
   failBuild?: boolean;
+  authorizations?: AuthorizationAssociation[];
 }) {
   const config = overrides.config ?? baseConfig();
   const outputDirs: string[] = [];
+  const authorizations = overrides.authorizations ?? [];
+  const written: AuthorizationAssociation[] = [];
   return {
     deps: {
       readConfig: () => JSON.stringify(config),
@@ -228,8 +236,32 @@ function testDeps(overrides: {
         return dir;
       },
       removeOutputDir: (dir: string) => fs.rmSync(dir, { recursive: true, force: true }),
+      readAuthorizations: () => authorizations,
+      writeAuthorization: (association: AuthorizationAssociation) => {
+        authorizations.push(association);
+        written.push(association);
+      },
     },
     outputDirs,
+    authorizations,
+    written,
+  };
+}
+
+const CONSUMER_ID = "git:/proj/.git";
+const CONFIG_ID = "repo:build-config.json";
+
+const FINGERPRINT = "f".repeat(64);
+
+function matchingAssociation(
+  overrides: Partial<AuthorizationAssociation> = {},
+): AuthorizationAssociation {
+  return {
+    consumer: CONSUMER_ID,
+    config: CONFIG_ID,
+    fingerprint: FINGERPRINT,
+    buildId: "existing-build-id",
+    ...overrides,
   };
 }
 
@@ -237,16 +269,18 @@ test("approval denial stops startup before building or selecting", async () => {
   const { dir } = { dir: fs.mkdtempSync(path.join("/tmp", "echoriad-gi-")) };
   const configPath = writeBuildConfig(dir, baseConfig());
   const builtCommands: unknown[] = [];
-  const { deps } = testDeps({ builtCommands, existingRefs: new Set() });
-  const approvals: string[] = [];
+  const approvals: { action: string; summary: string }[] = [];
+  const { deps, written } = testDeps({ builtCommands, existingRefs: new Set() });
   await assert.rejects(
     prepareGuestImage({
       configPath,
       projectRoot: "/proj",
       consumer: "project (/proj)",
+      consumerId: CONSUMER_ID,
+      configId: CONFIG_ID,
       interactive: true,
-      approve: async (summary) => {
-        approvals.push(summary);
+      approve: async (action, summary) => {
+        approvals.push({ action, summary });
         return false;
       },
       deps,
@@ -255,6 +289,9 @@ test("approval denial stops startup before building or selecting", async () => {
   );
   assert.equal(builtCommands.length, 0);
   assert.equal(approvals.length, 1);
+  assert.equal(approvals[0]!.action, "build");
+  // No authorization is recorded for a denied build.
+  assert.equal(written.length, 0);
 });
 
 test("noninteractive sessions fail closed before building", async () => {
@@ -268,6 +305,8 @@ test("noninteractive sessions fail closed before building", async () => {
       configPath,
       projectRoot: "/proj",
       consumer: "project (/proj)",
+      consumerId: CONSUMER_ID,
+      configId: CONFIG_ID,
       interactive: false,
       approve: async () => {
         approveCalled = true;
@@ -284,7 +323,7 @@ test("noninteractive sessions fail closed before building", async () => {
   assert.equal(builtCommands.length, 0);
 });
 
-test("successful build starts the VM from the imported image build id", async () => {
+test("successful build starts the VM from the imported image build id and records authorization", async () => {
   const { dir } = { dir: fs.mkdtempSync(path.join("/tmp", "echoriad-gi-")) };
   const configPath = writeBuildConfig(dir, baseConfig());
   const builtCommands: {
@@ -293,11 +332,13 @@ test("successful build starts the VM from the imported image build id", async ()
     imageRef: string;
   }[] = [];
   const refs = new Set<string>();
-  const { deps } = testDeps({ builtCommands, existingRefs: refs });
+  const { deps, written } = testDeps({ builtCommands, existingRefs: refs });
   const result = await prepareGuestImage({
     configPath,
     projectRoot: "/proj",
     consumer: "project (/proj)",
+    consumerId: CONSUMER_ID,
+    configId: CONFIG_ID,
     interactive: true,
     approve: async () => true,
     deps,
@@ -312,26 +353,193 @@ test("successful build starts the VM from the imported image build id", async ()
   // unique temporary output directory, removed afterwards
   assert.ok(builtCommands[0]!.outputDir.startsWith("/tmp/echoriad-test-out-"));
   assert.equal(fs.existsSync(builtCommands[0]!.outputDir), false);
+  // the successful build is recorded as an authorization association
+  assert.deepEqual(written, [matchingAssociation()]);
   void refs;
 });
 
-test("a previously built image is reused without rebuilding (after approval)", async () => {
+test("a new consumer reusing a globally cached image needs approval first", async () => {
   const { dir } = { dir: fs.mkdtempSync(path.join("/tmp", "echoriad-gi-")) };
   const configPath = writeBuildConfig(dir, baseConfig());
   const builtCommands: unknown[] = [];
-  const refs = new Set<string>([imageRefForFingerprint("f".repeat(64))]);
-  const { deps } = testDeps({ builtCommands, existingRefs: refs });
+  const refs = new Set<string>([imageRefForFingerprint(FINGERPRINT)]);
+  const approvals: { action: string; summary: string }[] = [];
+  const { deps, written } = testDeps({ builtCommands, existingRefs: refs });
   const result = await prepareGuestImage({
     configPath,
     projectRoot: "/proj",
     consumer: "project (/proj)",
+    consumerId: CONSUMER_ID,
+    configId: CONFIG_ID,
     interactive: true,
-    approve: async () => true,
+    approve: async (action, summary) => {
+      approvals.push({ action, summary });
+      return true;
+    },
     deps,
   });
+  // No build runs: the globally cached image behind the fingerprint
+  // reference is reused after approval.
+  assert.equal(builtCommands.length, 0);
+  assert.equal(approvals.length, 1);
+  assert.equal(approvals[0]!.action, "reuse");
+  assert.match(approvals[0]!.summary, /Action: reuse the globally cached image/);
   assert.equal(result.built, false);
   assert.equal(result.imageSelector, "existing-build-id");
+  // Approval applies to this consumer and records the association.
+  assert.deepEqual(written, [matchingAssociation()]);
+});
+
+test("denial of a cached-image reuse stops startup without building", async () => {
+  const { dir } = { dir: fs.mkdtempSync(path.join("/tmp", "echoriad-gi-")) };
+  const configPath = writeBuildConfig(dir, baseConfig());
+  const builtCommands: unknown[] = [];
+  const refs = new Set<string>([imageRefForFingerprint(FINGERPRINT)]);
+  const { deps, written } = testDeps({ builtCommands, existingRefs: refs });
+  await assert.rejects(
+    prepareGuestImage({
+      configPath,
+      projectRoot: "/proj",
+      consumer: "project (/proj)",
+      consumerId: CONSUMER_ID,
+      configId: CONFIG_ID,
+      interactive: true,
+      approve: async () => false,
+      deps,
+    }),
+    /not approved/,
+  );
   assert.equal(builtCommands.length, 0);
+  assert.equal(written.length, 0);
+});
+
+test("an authorized association reuses a valid image silently", async () => {
+  const { dir } = { dir: fs.mkdtempSync(path.join("/tmp", "echoriad-gi-")) };
+  const configPath = writeBuildConfig(dir, baseConfig());
+  const builtCommands: unknown[] = [];
+  const refs = new Set<string>([imageRefForFingerprint(FINGERPRINT)]);
+  const approvals: { action: string; summary: string }[] = [];
+  const { deps, written } = testDeps({
+    builtCommands,
+    existingRefs: refs,
+    authorizations: [matchingAssociation()],
+  });
+  const statuses: string[] = [];
+  const result = await prepareGuestImage({
+    configPath,
+    projectRoot: "/proj",
+    consumer: "project (/proj)",
+    consumerId: CONSUMER_ID,
+    configId: CONFIG_ID,
+    interactive: true,
+    approve: async (action, summary) => {
+      approvals.push({ action, summary });
+      return true;
+    },
+    onStatus: (message) => statuses.push(message),
+    deps,
+  });
+  // A matching authorized association with a valid image object needs no
+  // approval at all.
+  assert.equal(approvals.length, 0);
+  assert.equal(builtCommands.length, 0);
+  assert.equal(result.built, false);
+  assert.equal(result.imageSelector, "existing-build-id");
+  assert.match(statuses.join("\n"), /reusing authorized guest image/);
+  assert.equal(written.length, 0);
+});
+
+test("a noninteractive session reuses an authorized image without prompting", async () => {
+  const { dir } = { dir: fs.mkdtempSync(path.join("/tmp", "echoriad-gi-")) };
+  const configPath = writeBuildConfig(dir, baseConfig());
+  const builtCommands: unknown[] = []
+  const refs = new Set<string>([imageRefForFingerprint(FINGERPRINT)]);
+  const { deps } = testDeps({
+    builtCommands,
+    existingRefs: refs,
+    authorizations: [matchingAssociation()],
+  });
+  let approveCalled = false;
+  const result = await prepareGuestImage({
+    configPath,
+    projectRoot: "/proj",
+    consumer: "project (/proj)",
+    consumerId: CONSUMER_ID,
+    configId: CONFIG_ID,
+    interactive: false,
+    approve: async () => {
+      approveCalled = true;
+      return true;
+    },
+    deps,
+  });
+  assert.equal(approveCalled, false);
+  assert.equal(result.built, false);
+  assert.equal(result.imageSelector, "existing-build-id");
+});
+
+test("a missing Gondolin object prompts and rebuilds despite an authorized association", async () => {
+  const { dir } = { dir: fs.mkdtempSync(path.join("/tmp", "echoriad-gi-")) };
+  const configPath = writeBuildConfig(dir, baseConfig());
+  const builtCommands: { imageRef: string }[] = [];
+  // The association exists, but the image object behind the fingerprint
+  // reference is gone (no existing refs).
+  const refs = new Set<string>();
+  const approvals: { action: string; summary: string }[] = [];
+  const { deps, written } = testDeps({
+    builtCommands,
+    existingRefs: refs,
+    authorizations: [matchingAssociation()],
+  });
+  const result = await prepareGuestImage({
+    configPath,
+    projectRoot: "/proj",
+    consumer: "project (/proj)",
+    consumerId: CONSUMER_ID,
+    configId: CONFIG_ID,
+    interactive: true,
+    approve: async (action, summary) => {
+      approvals.push({ action, summary });
+      return true;
+    },
+    deps,
+  });
+  // The unusable cache entry prompts again and the image is rebuilt; an
+  // older fingerprint is never used as a fallback.
+  assert.equal(approvals.length, 1);
+  assert.equal(approvals[0]!.action, "build");
+  assert.equal(builtCommands.length, 1);
+  assert.equal(builtCommands[0]!.imageRef, imageRefForFingerprint(FINGERPRINT));
+  assert.equal(result.built, true);
+  assert.equal(result.imageSelector, "existing-build-id");
+  assert.deepEqual(written, [matchingAssociation()]);
+});
+
+test("cache deletion (empty authorization state) prompts again before reuse", async () => {
+  const { dir } = { dir: fs.mkdtempSync(path.join("/tmp", "echoriad-gi-")) };
+  const configPath = writeBuildConfig(dir, baseConfig());
+  const builtCommands: unknown[] = [];
+  // The image still exists globally, but the authorization metadata is
+  // gone (deleted cache reads as empty).
+  const refs = new Set<string>([imageRefForFingerprint(FINGERPRINT)]);
+  const approvals: { action: string }[] = [];
+  const { deps } = testDeps({ builtCommands, existingRefs: refs, authorizations: [] });
+  const result = await prepareGuestImage({
+    configPath,
+    projectRoot: "/proj",
+    consumer: "project (/proj)",
+    consumerId: CONSUMER_ID,
+    configId: CONFIG_ID,
+    interactive: true,
+    approve: async (action) => {
+      approvals.push({ action });
+      return true;
+    },
+    deps,
+  });
+  assert.equal(approvals.length, 1);
+  assert.equal(approvals[0]!.action, "reuse");
+  assert.equal(result.built, false);
 });
 
 test("build failure stops startup, notifies the output tail, and removes the temporary output directory", async () => {
@@ -345,6 +553,8 @@ test("build failure stops startup, notifies the output tail, and removes the tem
       configPath,
       projectRoot: "/proj",
       consumer: "project (/proj)",
+      consumerId: CONSUMER_ID,
+      configId: CONFIG_ID,
       interactive: true,
       approve: async () => true,
       onBuildFailure: (tail) => failureTails.push(tail),
@@ -376,6 +586,8 @@ test("the real build path routes the output tail to onBuildFailure", async () =>
       configPath,
       projectRoot: dir,
       consumer: "project",
+      consumerId: CONSUMER_ID,
+      configId: CONFIG_ID,
       interactive: true,
       approve: async () => true,
       onBuildFailure: (tail) => failureTails.push(tail),
@@ -424,6 +636,8 @@ test("missing and non-file build configs fail with actionable errors", async () 
       configPath: missing,
       projectRoot: "/proj",
       consumer: "project (/proj)",
+      consumerId: CONSUMER_ID,
+      configId: CONFIG_ID,
       interactive: true,
       approve: async () => true,
       deps,
@@ -438,6 +652,8 @@ test("missing and non-file build configs fail with actionable errors", async () 
       configPath: dir,
       projectRoot: dir,
       consumer: "project",
+      consumerId: CONSUMER_ID,
+      configId: CONFIG_ID,
       interactive: true,
       approve: async () => true,
       deps,
@@ -456,6 +672,8 @@ test("build configs rejected by Gondolin fail with an actionable error", async (
       configPath,
       projectRoot: dir,
       consumer: "project",
+      consumerId: CONSUMER_ID,
+      configId: CONFIG_ID,
       interactive: true,
       approve: async () => true,
       deps: {
@@ -483,6 +701,8 @@ test("prepareGuestImage parses and fingerprints the real config end to end", asy
     configPath,
     projectRoot: dir,
     consumer: "project",
+    consumerId: CONSUMER_ID,
+    configId: CONFIG_ID,
     interactive: true,
     approve: async () => true,
     deps: {

@@ -18,6 +18,13 @@ import {
   type BuildConfig,
 } from "@earendil-works/gondolin";
 import { computeBuildFingerprint, gondolinVersion } from "./fingerprint.ts";
+import {
+  authorizationFilePath,
+  findAuthorizedAssociation,
+  readAuthorizations,
+  saveAssociation,
+  type AuthorizationAssociation,
+} from "./authorization.ts";
 
 /** Errors that must keep failing on every startup attempt (fail closed). */
 export class GuestImageError extends Error {
@@ -100,7 +107,11 @@ export function mayUsePrivilegedContainer(config: BuildConfig): boolean {
   return process.platform !== "linux" || detectHostArchitecture() !== config.arch;
 }
 
+/** Whether a prompt asks to build the image or reuse a cached one. */
+export type ApprovalAction = "build" | "reuse";
+
 export type ApprovalSummaryInput = {
+  action: ApprovalAction;
   consumer: string;
   projectRoot: string;
   configPath: string;
@@ -118,6 +129,11 @@ export type ApprovalSummaryInput = {
  */
 export function buildApprovalSummary(input: ApprovalSummaryInput): string {
   const lines: string[] = [];
+  lines.push(
+    input.action === "build"
+      ? "Action: build the guest image from this build config"
+      : "Action: reuse the globally cached image built from this build config",
+  );
   lines.push(`Consumer: ${input.consumer}`);
   lines.push(`Project root: ${input.projectRoot}`);
   lines.push(`Build config: ${input.configPath}`);
@@ -204,10 +220,17 @@ export type GuestImageResult = {
 export type PrepareGuestImageOptions = {
   configPath: string;
   projectRoot: string;
+  /** human-facing consumer label for the approval prompt */
   consumer: string;
+  /** canonical consumer identity for authorization metadata */
+  consumerId: string;
+  /** build-config identity for authorization metadata */
+  configId: string;
   interactive: boolean;
-  approve: (summary: string) => Promise<boolean>;
+  approve: (action: ApprovalAction, summary: string) => Promise<boolean>;
   onStatus?: (message: string) => void;
+  /** human-facing warnings, for example malformed authorization metadata */
+  onWarning?: (message: string) => void;
   onBuildOutput?: (chunk: string) => void;
   /**
    * Called with the tail of Gondolin's output when a build fails. The error
@@ -232,9 +255,14 @@ export type GuestImageDeps = {
   ) => Promise<void>;
   makeOutputDir: () => string;
   removeOutputDir: (dir: string) => void;
+  /** read the consumer authorization metadata (missing cache reads empty) */
+  readAuthorizations: () => AuthorizationAssociation[];
+  /** record one authorization association after a successful build or an
+   * approved cache reuse */
+  writeAuthorization: (association: AuthorizationAssociation) => void;
 };
 
-function defaultDeps(): GuestImageDeps {
+function defaultDeps(options: PrepareGuestImageOptions): GuestImageDeps {
   return {
     readConfig: (configPath) => fs.readFileSync(configPath, "utf8"),
     parseConfig: (raw, configPath) => {
@@ -262,6 +290,10 @@ function defaultDeps(): GuestImageDeps {
     makeOutputDir: () =>
       fs.mkdtempSync(path.join(os.tmpdir(), "echoriad-build-")),
     removeOutputDir: (dir) => fs.rmSync(dir, { recursive: true, force: true }),
+    readAuthorizations: () =>
+      readAuthorizations(authorizationFilePath(), options.onWarning),
+    writeAuthorization: (association) =>
+      saveAssociation(authorizationFilePath(), association, options.onWarning),
   };
 }
 
@@ -319,21 +351,23 @@ export async function runGondolinBuild(
 /**
  * Resolve or build the guest image for a selected build config.
  *
- * Fails closed: a noninteractive session or a denied prompt stops startup
- * before any build or image selection.
+ * The internal fingerprint-derived image reference is resolved in
+ * Gondolin's store before building, so any consumer with matching inputs
+ * can reuse a global build. Silent reuse requires an authorized
+ * association (consumer, build-config identity, fingerprint, build ID)
+ * with a valid image object; a new consumer reusing a global image and an
+ * uncached fingerprint both require approval. A missing Gondolin object
+ * makes the cache entry unusable: Echoriad prompts and rebuilds, and never
+ * falls back to an image produced for an older fingerprint.
+ *
+ * Fails closed: a noninteractive session that requires approval stops
+ * startup before building or selecting the image; a denied prompt stops
+ * startup.
  */
 export async function prepareGuestImage(
   options: PrepareGuestImageOptions,
 ): Promise<GuestImageResult> {
-  const deps = { ...defaultDeps(), ...options.deps };
-
-  if (!options.interactive) {
-    throw new GuestImageError(
-      "Echoriad: the selected build config requires approval before building, " +
-        "but this session is noninteractive. Open the project interactively to approve the build.",
-      { permanent: true },
-    );
-  }
+  const deps = { ...defaultDeps(options), ...options.deps };
 
   const { configPath } = options;
   let stat: fs.Stats;
@@ -369,41 +403,87 @@ export async function prepareGuestImage(
   const fp = deps.fingerprint(config, configDir);
   const imageRef = imageRefForFingerprint(fp.fingerprint);
 
-  const summary = buildApprovalSummary({
-    consumer: options.consumer,
-    projectRoot: options.projectRoot,
-    configPath,
-    localInputPaths: fp.localInputPaths,
-    config,
-  });
-  const approved = await options.approve(summary);
-  if (!approved) {
-    throw new GuestImageError(
-      "Echoriad: guest image build was not approved; VM startup stopped.",
-      { permanent: true },
-    );
-  }
-
-  // A valid image object behind the fingerprint reference allows reuse.
+  // Resolve internal Gondolin image references by fingerprint before
+  // building: a valid image object behind the fingerprint reference is a
+  // globally reusable build.
   let cached: { buildId: string } | undefined;
   try {
     cached = deps.resolveImage(imageRef);
   } catch {
     cached = undefined;
   }
-  if (cached) {
+
+  // A matching authorized association permits silent cache reuse.
+  const associations = deps.readAuthorizations();
+  const authorized = findAuthorizedAssociation(
+    associations,
+    options.consumerId,
+    options.configId,
+    fp.fingerprint,
+  );
+
+  const result = (
+    image: { buildId: string },
+    built: boolean,
+  ): GuestImageResult => ({
+    imageSelector: image.buildId,
+    fingerprint: fp.fingerprint,
+    abbreviatedFingerprint: fp.abbreviated,
+    imageRef,
+    buildId: image.buildId,
+    built,
+    configPath,
+  });
+
+  if (authorized && cached) {
     options.onStatus?.(
-      `reusing guest image ${fp.abbreviatedFingerprint}`,
+      `reusing authorized guest image ${fp.abbreviatedFingerprint}`,
     );
-    return {
-      imageSelector: cached.buildId,
+    return result(cached, false);
+  }
+
+  const action: ApprovalAction = cached ? "reuse" : "build";
+
+  if (!options.interactive) {
+    throw new GuestImageError(
+      "Echoriad: the selected build config requires approval before " +
+        (action === "reuse"
+          ? "reusing the cached guest image"
+          : "building the guest image") +
+        ", but this session is noninteractive. " +
+        "Open the project interactively to approve it.",
+      { permanent: true },
+    );
+  }
+
+  const summary = buildApprovalSummary({
+    action,
+    consumer: options.consumer,
+    projectRoot: options.projectRoot,
+    configPath,
+    localInputPaths: fp.localInputPaths,
+    config,
+  });
+  const approved = await options.approve(action, summary);
+  if (!approved) {
+    throw new GuestImageError(
+      "Echoriad: the guest image request was not approved; VM startup stopped.",
+      { permanent: true },
+    );
+  }
+
+  if (cached) {
+    // Approval lets this consumer adopt the globally cached image.
+    options.onStatus?.(
+      `reusing cached guest image ${fp.abbreviatedFingerprint}`,
+    );
+    deps.writeAuthorization({
+      consumer: options.consumerId,
+      config: options.configId,
       fingerprint: fp.fingerprint,
-      abbreviatedFingerprint: fp.abbreviated,
-      imageRef,
       buildId: cached.buildId,
-      built: false,
-      configPath,
-    };
+    });
+    return result(cached, false);
   }
 
   options.onStatus?.(`building guest image ${fp.abbreviatedFingerprint}`);
@@ -414,17 +494,17 @@ export async function prepareGuestImage(
       options.onBuildOutput,
       options.onBuildFailure,
     );
-    // Only trust the image after the import is resolved to a build id.
+    // Only trust the image after the import is resolved to a build id, and
+    // only record authorization after Gondolin imported the image and
+    // Echoriad resolved it.
     const resolved = deps.resolveImage(imageRef);
-    return {
-      imageSelector: resolved.buildId,
+    deps.writeAuthorization({
+      consumer: options.consumerId,
+      config: options.configId,
       fingerprint: fp.fingerprint,
-      abbreviatedFingerprint: fp.abbreviated,
-      imageRef,
       buildId: resolved.buildId,
-      built: true,
-      configPath,
-    };
+    });
+    return result(resolved, true);
   } finally {
     deps.removeOutputDir(outputDir);
   }

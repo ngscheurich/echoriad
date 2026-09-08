@@ -25,12 +25,15 @@
  *
  * Automatic guest image builds:
  *   Instead of selecting an existing image, a configuration file may set
- *   "buildConfig" to a Gondolin build-config path. Before building, Echoriad
- *   fingerprints the config and its local inputs, shows a human-facing
- *   approval prompt, then launches the bundled Gondolin CLI. A config file
- *   may define "image" or "buildConfig", not both. A project selector
- *   overrides both system selectors; ECHORIAD_IMAGE applies only when no
- *   file selects a source.
+ *   "buildConfig" to a Gondolin build-config path. Echoriad fingerprints
+ *   the config and its local inputs and reuses an authorized cached build
+ *   silently; otherwise it shows the human-facing approval prompt before
+ *   reusing a globally cached image or launching the bundled Gondolin CLI.
+ *   Authorizations are stored per consumer under the Echoriad cache
+ *   directory, so deleting that directory revokes them. A config file may
+ *   define "image" or "buildConfig", not both. A project selector overrides
+ *   both system selectors; ECHORIAD_IMAGE applies only when no file selects
+ *   a source.
  *
  * Per-project configuration is read from `.echoriad.json` in the project root.
  * System-wide defaults are read from `$XDG_CONFIG_HOME/echoriad/config.json`
@@ -113,6 +116,7 @@ import {
   GuestImageError,
   prepareGuestImage,
 } from "./src/guest-image.ts";
+import { deriveBuildIdentity } from "./src/authorization.ts";
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -748,20 +752,36 @@ async function resolveImageStartup(
     return { imagePath: image, imageLabel: image };
   }
 
-  // A build config is selected: fingerprint it, require approval, then reuse
-  // or build the guest image before VM creation.
+  // A build config is selected: fingerprint it, then reuse an authorized
+  // cached image silently or require approval before reusing or building.
+  // The consumer identity is the canonical common Git directory for Git
+  // projects (linked worktrees share it), the canonical project root
+  // otherwise, and a system-wide consumer for system-selected configs.
+  const identity = deriveBuildIdentity({
+    origin: selection.origin,
+    projectRoot,
+    configPath: selection.configPath,
+  });
   const result = await prepareGuestImage({
     configPath: selection.configPath,
     projectRoot,
-    consumer:
-      selection.origin === "system"
-        ? "system configuration"
-        : `project (${projectRoot})`,
+    consumer: identity.consumerLabel,
+    consumerId: identity.consumerId,
+    configId: identity.configId,
     interactive: Boolean(ctx?.hasUI),
-    approve: (summary) =>
+    approve: (action, summary) =>
       ctx
-        ? ctx.ui.confirm("Build Gondolin guest image?", summary)
+        ? ctx.ui.confirm(
+            action === "build"
+              ? "Build Gondolin guest image?"
+              : "Reuse cached Gondolin guest image?",
+            summary,
+          )
         : Promise.resolve(false),
+    onWarning: (message) => {
+      // Messages from the authorization store are already prefixed.
+      ctx?.ui.notify(message, "warning");
+    },
     onStatus: (message) =>
       ctx?.ui.setStatus("echoriad", `Echoriad: ${message}`),
     onBuildOutput: (chunk) => {
