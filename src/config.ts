@@ -130,7 +130,7 @@ export function parseConfigFile(configPath: string, label: string): ProjectConfi
     // A missing file reads as "no configuration". Any other read failure
     // (permissions, a directory at the path) must surface, or the file's
     // settings would be silently dropped.
-    const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+    const code = error instanceof Error && "code" in error ? String(error.code) : undefined;
     if (code === "ENOENT" || code === "ENOTDIR") return {};
     throw new ConfigError(
       `Echoriad: could not read ${label} (${configPath}): ` +
@@ -203,14 +203,11 @@ export function parseConfigFile(configPath: string, label: string): ProjectConfi
 }
 
 export function loadProjectConfig(projectRoot: string): ProjectConfig {
-  return parseConfigFile(
-    path.join(projectRoot, CONFIG_PATH),
-    path.relative(projectRoot, path.join(projectRoot, CONFIG_PATH)) || CONFIG_PATH,
-  );
+  return parseConfigFile(path.join(projectRoot, CONFIG_PATH), CONFIG_PATH);
 }
 
 // Base config directory following the XDG Base Directory Specification:
-// `$XDG_CONFIG_HOME` if set and non-absolute-path-safe, otherwise `$HOME/.config`.
+// `$XDG_CONFIG_HOME` if set, non-empty, and absolute; otherwise `$HOME/.config`.
 // This is the most portable default across Linux, macOS, and the BSDs.
 export function configDir(): string {
   const xdg = process.env.XDG_CONFIG_HOME;

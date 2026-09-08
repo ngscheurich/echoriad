@@ -258,7 +258,7 @@ export function readAuthorizations(
     }
     onWarning?.(
       `Echoriad: the image build authorization metadata at ${filePath} ` +
-        `is malformed (${(error as Error).message})` +
+        `is malformed (${error instanceof Error ? error.message : String(error)})` +
         (moved ? ` and has been moved aside to ${movedAside}` : " and could not be moved aside") +
         `; previous build approvals are treated as absent and will be ` +
         `requested again.`,

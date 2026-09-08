@@ -16,6 +16,7 @@ import type { BuildConfig } from "@earendil-works/gondolin";
 
 export const FINGERPRINT_SCHEMA_VERSION = 1;
 
+// Package metadata is process-constant; resolve it once.
 let cachedGondolinVersion: string | undefined;
 
 /** Version of the installed `@earendil-works/gondolin` package. */

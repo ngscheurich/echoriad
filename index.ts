@@ -18,7 +18,7 @@
  *   - QEMU installed (for example, `brew install qemu` on macOS)
  *
  * Custom guest image:
- *   Set ECHORIAD_IMAGE to an image selector (`name:tag` or build id) or a
+ *   Set ECHORIAD_IMAGE to an image selector (`name:tag` or build ID) or a
  *   path to a directory containing the guest assets (vmlinuz-virt,
  *   initramfs.cpio.lz4, rootfs.ext4). When unset, Gondolin's default
  *   (alpine-base:latest, or $GONDOLIN_DEFAULT_IMAGE) is used.
@@ -43,10 +43,10 @@
  * Example configuration:
  *
  *   {
- *     "image": "my-custom:latest",            // optional, overrides ECHORIAD_IMAGE
- *     "buildConfig": "build-config.json",     // optional; mutual exclusive with "image"
- *     "cpus": 4,                              // optional, default 2
- *     "memory": "2G",                         // optional, qemu syntax, default "1G"
+ *     "image": "my-custom:latest",        // optional, overrides ECHORIAD_IMAGE
+ *     "buildConfig": "build-config.json", // mutually exclusive with "image"
+ *     "cpus": 4,                          // optional, default 2
+ *     "memory": "2G",                     // optional, default "1G" (QEMU)
  *     "mounts": {
  *       "/root/.pi": {
  *         "type": "host",
@@ -59,29 +59,31 @@
  *       "/mnt/extra": "extra"
  *     },
  *     "network": {
- *       "enabled": true,                      // optional, default true
- *       "allowedHosts": ["api.github.com"],   // optional HTTP/HTTPS egress allowlist
- *       "secrets": {                          // optional, host env -> guest placeholder
+ *       "enabled": true,                    // optional, default true
+ *       "allowedHosts": ["api.github.com"], // optional HTTP/HTTPS allowlist
+ *       "secrets": {                        // host env -> guest placeholder
  *         "GITHUB_TOKEN": {
  *           "hosts": ["api.github.com"],
  *           "fromEnv": "GITHUB_TOKEN"
  *         }
  *       },
- *       "tcp": {                              // optional, raw TCP host mappings
- *         "postgres": "127.0.0.1:5432"        //   guest host -> upstream host:port
+ *       "tcp": {                          // optional, raw TCP host mappings
+ *         "postgres": "127.0.0.1:5432"    // guest host -> upstream host:port
  *       }
  *     }
  *   }
  *
  *  Mounts:
  *    - Key is the guest-absolute mount point
- *    - Strings configure read-write host mounts relative to the project root
- *    - Object host mounts support `path` (~, $ENV expansion) and `readonly: true`
+ *    - Strings configure read-write host mounts relative to project root
+ *    - Object host mounts support `path` (~, $ENV expansion) and
+ *      `readonly: true`
  *    - Memory mounts use `type: "memory"` and optional `readonly: true`
  *
  *  Networking:
  *    - `network.enabled`: set to `false` to disable networking entirely
- *    - `network.allowedHosts`: governs HTTP/HTTPS egress only (omitted = allow all; explicit list = allowlist; `[]` = deny all)
+ *    - `network.allowedHosts`: governs HTTP/HTTPS egress only
+ *      (omitted = allow all; explicit list = allowlist; `[]` = deny all)
  *    - `network.tcp` maps raw-TCP destinations (e.g. databases)
  *
  *  `network.tcp` is required for non-HTTP protocols, which are otherwise
@@ -125,10 +127,8 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { deriveBuildIdentity } from "./src/authorization.ts";
 import {
-  type HostMountConfig,
   loadProjectConfig,
   loadSystemConfig,
-  type MemoryMountConfig,
   type ProjectConfig,
   resolveImageSelection,
 } from "./src/config.ts";
@@ -370,11 +370,15 @@ function appendGrepBlock(params: {
   relativePath: string;
   lineIndex: number;
   contextLines: number;
-}): boolean {
+  /** highest line index already emitted for this file, or -1 */
+  lastEmittedLine: number;
+}): { lastEmittedLine: number; truncated: boolean } {
   let linesTruncated = false;
+  // Skip lines a previous match's context window already emitted, so
+  // overlapping windows do not print the same lines twice.
   const start =
     params.contextLines > 0
-      ? Math.max(0, params.lineIndex - params.contextLines)
+      ? Math.max(0, params.lineIndex - params.contextLines, params.lastEmittedLine + 1)
       : params.lineIndex;
   const end =
     params.contextLines > 0
@@ -388,7 +392,7 @@ function appendGrepBlock(params: {
     const separator = index === params.lineIndex ? ":" : "-";
     params.outputLines.push(`${params.relativePath}${separator}${index + 1}${separator} ${text}`);
   }
-  return linesTruncated;
+  return { lastEmittedLine: end, truncated: linesTruncated };
 }
 
 async function executeEchoriadGrep(
@@ -424,19 +428,21 @@ async function executeEchoriadGrep(
       }
       const lines = content.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
       const displayPath = rootIsDirectory ? relativePath : path.posix.basename(guestPath);
+      let lastEmittedLine = -1;
       for (let index = 0; index < lines.length; index++) {
         if (signal?.aborted) throw new Error("Operation aborted");
         if (!matcher(lines[index] ?? "")) continue;
         matchCount++;
-        if (
-          appendGrepBlock({
-            outputLines,
-            lines,
-            relativePath: displayPath,
-            lineIndex: index,
-            contextLines,
-          })
-        ) {
+        const block = appendGrepBlock({
+          outputLines,
+          lines,
+          relativePath: displayPath,
+          lineIndex: index,
+          contextLines,
+          lastEmittedLine,
+        });
+        lastEmittedLine = block.lastEmittedLine;
+        if (block.truncated) {
           linesTruncated = true;
         }
         if (matchCount >= effectiveLimit) {
@@ -611,9 +617,9 @@ function resolveMounts(projectRoot: string, config: ProjectConfig): ResolvedMoun
           );
         }
 
-        const type = (mountDef as HostMountConfig).type ?? "host";
-        if (type === "host") {
-          const hostMount = mountDef as HostMountConfig;
+        const type = mountDef.type ?? "host";
+        if (mountDef.type === undefined || mountDef.type === "host") {
+          const hostMount = mountDef;
           if (!hostMount.path || typeof hostMount.path !== "string" || !hostMount.path.trim()) {
             throw new EchoriadError(
               `Echoriad: host mount for "${rawGuestPath}" requires a non-empty string "path" property`,
@@ -627,8 +633,8 @@ function resolveMounts(projectRoot: string, config: ProjectConfig): ResolvedMoun
           }
           vfsMounts[guestPath] = provider;
           hostMountMap.set(guestPath, hostPath);
-        } else if (type === "memory") {
-          const memMount = mountDef as MemoryMountConfig;
+        } else if (mountDef.type === "memory") {
+          const memMount = mountDef;
           let provider: VirtualProvider = new MemoryProvider();
           if (memMount.readonly) {
             provider = new ReadonlyProvider(provider);
@@ -677,7 +683,7 @@ type ResolvedImageStartup = {
 /**
  * Resolve the guest image source for this startup. When a build config is
  * selected, the human approval prompt, fingerprinting, and automatic build
- * happen here; the returned image selector is the imported Gondolin build id.
+ * happen here; the returned image selector is the imported Gondolin build ID.
  */
 async function resolveImageStartup(
   projectRoot: string,

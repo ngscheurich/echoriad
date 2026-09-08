@@ -32,6 +32,7 @@ export class GuestImageError extends Error {
   }
 }
 
+// The bundled CLI path and version are process-constant; resolve them once.
 let cachedCli: { cliPath: string; version: string } | undefined;
 
 /** Resolve the bundled Gondolin CLI from the package dependency, not PATH. */
@@ -195,7 +196,7 @@ export function buildApprovalSummary(input: ApprovalSummaryInput): string {
 }
 
 export type GuestImageResult = {
-  /** selector to start the VM from (the imported content-derived build id) */
+  /** selector to start the VM from (the imported content-derived build ID) */
   imageSelector: string;
   /** full hex fingerprint */
   fingerprint: string;
@@ -203,7 +204,7 @@ export type GuestImageResult = {
   abbreviatedFingerprint: string;
   /** internal fingerprint-derived Gondolin image reference */
   imageRef: string;
-  /** Gondolin build id backing the image */
+  /** Gondolin build ID backing the image */
   buildId: string;
   /** whether this startup built the image (false = reused a cached build) */
   built: boolean;
@@ -270,7 +271,7 @@ function defaultDeps(options: PrepareGuestImageOptions): GuestImageDeps {
       } catch (error) {
         throw new GuestImageError(
           `Echoriad: build config ${configPath} was rejected by Gondolin: ` +
-            `${(error as Error).message}`,
+            `${error instanceof Error ? error.message : String(error)}`,
           { permanent: true },
         );
       }
@@ -331,7 +332,7 @@ export async function runGondolinBuild(
     try {
       process.kill(-child.pid, signal);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+      if (error instanceof Error && "code" in error && error.code !== "ESRCH") throw error;
     }
   };
   const cancel = () => {
@@ -434,7 +435,8 @@ async function prepareImage(options: PrepareGuestImageOptions): Promise<GuestIma
     raw = deps.readConfig(configPath);
   } catch (error) {
     throw new GuestImageError(
-      `Echoriad: build config ${configPath} could not be read: ${(error as Error).message}`,
+      `Echoriad: build config ${configPath} could not be read: ` +
+        `${error instanceof Error ? error.message : String(error)}`,
       { permanent: true },
     );
   }
@@ -536,7 +538,7 @@ async function prepareImage(options: PrepareGuestImageOptions): Promise<GuestIma
       options.signal,
     );
     checkBuildCancellation(options.signal);
-    // Only trust the image after the import is resolved to a build id, and
+    // Only trust the image after the import is resolved to a build ID, and
     // only record authorization after Gondolin imported the image and
     // Echoriad resolved it.
     const resolved = deps.resolveImage(imageRef);
