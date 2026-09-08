@@ -794,7 +794,8 @@ function resolveVmOptions(
   }
 
   const hasHttpPolicy = Array.isArray(network.allowedHosts) || network.secrets;
-  const hasTcp = network.tcp && Object.keys(network.tcp).length > 0;
+  const tcp = network.tcp;
+  const hasTcp = tcp && Object.keys(tcp).length > 0;
 
   if (hasHttpPolicy) {
     const secretDefs: Record<string, { hosts: string[]; value: string }> = {};
@@ -819,7 +820,7 @@ function resolveVmOptions(
   if (hasTcp) {
     // Raw TCP host mappings require synthetic per-host DNS so the guest can
     // resolve mapped hostnames and the host can map outbound flows.
-    options.tcp = { hosts: network.tcp };
+    options.tcp = { hosts: tcp };
     options.dns = { mode: "synthetic", syntheticHostMapping: "per-host" };
   }
 

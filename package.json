@@ -6,7 +6,7 @@
   "scripts": {
     "clean": "echo 'nothing to clean'",
     "build": "echo 'nothing to build'",
-    "check": "biome check .",
+    "check": "biome check . && tsc --noEmit",
     "fix": "biome check --write .",
     "test": "node --test \"test/*.test.ts\""
   },
@@ -19,6 +19,9 @@
     "@earendil-works/gondolin": "0.12.0"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.5.12"
+    "@biomejs/biome": "^2.5.12",
+    "@earendil-works/pi-coding-agent": "^0.85.1",
+    "@types/node": "^26.5.0",
+    "typescript": "^7.0.2"
   }
 }

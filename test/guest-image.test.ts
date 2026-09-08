@@ -6,6 +6,7 @@ import { test } from "node:test";
 import type { BuildConfig } from "@earendil-works/gondolin";
 import { parseBuildConfig } from "@earendil-works/gondolin";
 import type { AuthorizationAssociation } from "../src/authorization.ts";
+import type { BuildCommandInput } from "../src/guest-image.ts";
 import {
   buildApprovalSummary,
   buildCommandArgs,
@@ -181,11 +182,13 @@ test("privileged container warning appears only for container builds with postBu
   assert.equal(mayUsePrivilegedContainer(ociWithCommands), false);
 });
 
+type BuiltCommand = { configPath: string; outputDir: string; imageRef: string };
+
 function testDeps(overrides: {
   config?: BuildConfig;
   approveResult?: boolean;
   approveCalls?: { action: string; summary: string }[];
-  builtCommands?: { configPath: string; outputDir: string; imageRef: string }[];
+  builtCommands?: BuiltCommand[];
   existingRefs?: Set<string>;
   failBuild?: boolean;
   authorizations?: AuthorizationAssociation[];
@@ -209,7 +212,7 @@ function testDeps(overrides: {
         }
         throw new Error(`no image for ${selector}`);
       },
-      build: async (command: { configPath: string; outputDir: string; imageRef: string }) => {
+      build: async (command: BuiltCommand) => {
         overrides.builtCommands?.push(command);
         if (overrides.failBuild) {
           throw new GuestImageError(
@@ -256,7 +259,7 @@ function matchingAssociation(
 test("approval denial stops startup before building or selecting", async () => {
   const { dir } = { dir: fs.mkdtempSync(path.join("/tmp", "echoriad-gi-")) };
   const configPath = writeBuildConfig(dir, baseConfig());
-  const builtCommands: unknown[] = [];
+  const builtCommands: BuiltCommand[] = [];
   const approvals: { action: string; summary: string }[] = [];
   const { deps, written } = testDeps({ builtCommands, existingRefs: new Set() });
   await assert.rejects(
@@ -285,7 +288,7 @@ test("approval denial stops startup before building or selecting", async () => {
 test("noninteractive sessions fail closed before building", async () => {
   const { dir } = { dir: fs.mkdtempSync(path.join("/tmp", "echoriad-gi-")) };
   const configPath = writeBuildConfig(dir, baseConfig());
-  const builtCommands: unknown[] = [];
+  const builtCommands: BuiltCommand[] = [];
   const { deps } = testDeps({ builtCommands, existingRefs: new Set() });
   let approveCalled = false;
   await assert.rejects(
@@ -314,11 +317,7 @@ test("noninteractive sessions fail closed before building", async () => {
 test("successful build starts the VM from the imported image build id and records authorization", async () => {
   const { dir } = { dir: fs.mkdtempSync(path.join("/tmp", "echoriad-gi-")) };
   const configPath = writeBuildConfig(dir, baseConfig());
-  const builtCommands: {
-    configPath: string;
-    outputDir: string;
-    imageRef: string;
-  }[] = [];
+  const builtCommands: BuiltCommand[] = [];
   const refs = new Set<string>();
   const { deps, written } = testDeps({ builtCommands, existingRefs: refs });
   const result = await prepareGuestImage({
@@ -349,7 +348,7 @@ test("successful build starts the VM from the imported image build id and record
 test("a new consumer reusing a globally cached image needs approval first", async () => {
   const { dir } = { dir: fs.mkdtempSync(path.join("/tmp", "echoriad-gi-")) };
   const configPath = writeBuildConfig(dir, baseConfig());
-  const builtCommands: unknown[] = [];
+  const builtCommands: BuiltCommand[] = [];
   const refs = new Set<string>([imageRefForFingerprint(FINGERPRINT)]);
   const approvals: { action: string; summary: string }[] = [];
   const { deps, written } = testDeps({ builtCommands, existingRefs: refs });
@@ -381,7 +380,7 @@ test("a new consumer reusing a globally cached image needs approval first", asyn
 test("denial of a cached-image reuse stops startup without building", async () => {
   const { dir } = { dir: fs.mkdtempSync(path.join("/tmp", "echoriad-gi-")) };
   const configPath = writeBuildConfig(dir, baseConfig());
-  const builtCommands: unknown[] = [];
+  const builtCommands: BuiltCommand[] = [];
   const refs = new Set<string>([imageRefForFingerprint(FINGERPRINT)]);
   const { deps, written } = testDeps({ builtCommands, existingRefs: refs });
   await assert.rejects(
@@ -404,7 +403,7 @@ test("denial of a cached-image reuse stops startup without building", async () =
 test("an authorized association reuses a valid image silently", async () => {
   const { dir } = { dir: fs.mkdtempSync(path.join("/tmp", "echoriad-gi-")) };
   const configPath = writeBuildConfig(dir, baseConfig());
-  const builtCommands: unknown[] = [];
+  const builtCommands: BuiltCommand[] = [];
   const refs = new Set<string>([imageRefForFingerprint(FINGERPRINT)]);
   const approvals: { action: string; summary: string }[] = [];
   const { deps, written } = testDeps({
@@ -440,7 +439,7 @@ test("an authorized association reuses a valid image silently", async () => {
 test("a noninteractive session reuses an authorized image without prompting", async () => {
   const { dir } = { dir: fs.mkdtempSync(path.join("/tmp", "echoriad-gi-")) };
   const configPath = writeBuildConfig(dir, baseConfig());
-  const builtCommands: unknown[] = [];
+  const builtCommands: BuiltCommand[] = [];
   const refs = new Set<string>([imageRefForFingerprint(FINGERPRINT)]);
   const { deps } = testDeps({
     builtCommands,
@@ -469,7 +468,7 @@ test("a noninteractive session reuses an authorized image without prompting", as
 test("a missing Gondolin object prompts and rebuilds despite an authorized association", async () => {
   const { dir } = { dir: fs.mkdtempSync(path.join("/tmp", "echoriad-gi-")) };
   const configPath = writeBuildConfig(dir, baseConfig());
-  const builtCommands: { imageRef: string }[] = [];
+  const builtCommands: BuiltCommand[] = [];
   // The association exists, but the image object behind the fingerprint
   // reference is gone (no existing refs).
   const refs = new Set<string>();
@@ -506,7 +505,7 @@ test("a missing Gondolin object prompts and rebuilds despite an authorized assoc
 test("cache deletion (empty authorization state) prompts again before reuse", async () => {
   const { dir } = { dir: fs.mkdtempSync(path.join("/tmp", "echoriad-gi-")) };
   const configPath = writeBuildConfig(dir, baseConfig());
-  const builtCommands: unknown[] = [];
+  const builtCommands: BuiltCommand[] = [];
   // The image still exists globally, but the authorization metadata is
   // gone (deleted cache reads as empty).
   const refs = new Set<string>([imageRefForFingerprint(FINGERPRINT)]);
@@ -589,7 +588,7 @@ test("the real build path routes the output tail to onBuildFailure", async () =>
 });
 
 async function defaultRunBuildForTest(
-  command: { cliPath: string },
+  command: BuildCommandInput,
   onBuildFailure?: (tail: string) => void,
 ): Promise<void> {
   // Replaces the gondolin CLI with a tiny script that writes output and

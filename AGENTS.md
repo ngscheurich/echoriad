@@ -22,6 +22,7 @@ echoriad/
 ├── CONTEXT.md                   # domain model and ubiquitous language — read first
 ├── AGENTS.md                    # this file
 ├── biome.json                   # formatter and linter configuration
+├── tsconfig.json                # strict type-check configuration for tsc --noEmit
 ├── mise.toml                    # pinned toolchain
 └── package.json                 # scripts and the extension manifest
 ```
@@ -35,7 +36,7 @@ The toolchain is pinned in `mise.toml`. Run `mise install` to get everything you
 There is no build step: Node runs the TypeScript source directly via type stripping. `npm run build` and `npm run clean` are placeholders.
 
 - `npm test` — run the `node:test` suites in `test/`
-- `npm run check` — Biome check; the gate for formatting and lint
+- `npm run check` — Biome check plus `tsc --noEmit`; the gate for formatting, lint, and types
 - `npm run fix` — apply Biome's safe fixes
 
 ## Code style

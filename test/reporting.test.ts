@@ -29,7 +29,7 @@ type TestHarness = {
   dir: string;
   notifications: string[];
   commands: Map<string, any>;
-  handlers: Map<string, (...args: never[]) => unknown>;
+  handlers: Map<string, (...args: any[]) => any>;
   ctx: any;
   runEchoriadCommand: () => Promise<string>;
   cleanup: () => void;
@@ -45,12 +45,12 @@ async function setup(): Promise<TestHarness> {
   process.chdir(dir);
 
   const notifications: string[] = [];
-  const handlers = new Map<string, (...args: never[]) => unknown>();
+  const handlers = new Map<string, (...args: any[]) => any>();
   const commands = new Map<string, any>();
   extension({
-    on: (name, fn) => handlers.set(name, fn),
+    on: (name: string, fn: (...args: any[]) => any) => handlers.set(name, fn),
     registerTool: () => {},
-    registerCommand: (name, command) => commands.set(name, command),
+    registerCommand: (name: string, command: any) => commands.set(name, command),
   } as any);
   const ctx = {
     hasUI: true,
@@ -90,16 +90,16 @@ function spawnInstance(
   h: TestHarness,
   confirm?: (action: unknown) => Promise<boolean>,
 ): {
-  handlers: Map<string, (...args: never[]) => unknown>;
+  handlers: Map<string, (...args: any[]) => any>;
   commands: Map<string, any>;
   ctx: any;
 } {
-  const handlers = new Map<string, (...args: never[]) => unknown>();
+  const handlers = new Map<string, (...args: any[]) => any>();
   const commands = new Map<string, any>();
   extension({
-    on: (name, fn) => handlers.set(name, fn),
+    on: (name: string, fn: (...args: any[]) => any) => handlers.set(name, fn),
     registerTool: () => {},
-    registerCommand: (name, command) => commands.set(name, command),
+    registerCommand: (name: string, command: any) => commands.set(name, command),
   } as any);
   const ctx = {
     hasUI: true,

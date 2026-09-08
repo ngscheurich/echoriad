@@ -45,14 +45,14 @@ test("Pi routes build failures only to humans and tools fail without host detail
     JSON.stringify({ arch: "aarch64", distro: "alpine", alpine: { version: "3.23.0" } }),
   );
   process.chdir(dir);
-  const handlers = new Map<string, (...args: never[]) => unknown>();
+  const handlers = new Map<string, (...args: any[]) => any>();
   const tools: any[] = [];
   const commands = new Map<string, any>();
   const human: string[] = [];
   extension({
-    on: (name, fn) => handlers.set(name, fn),
-    registerTool: (tool) => tools.push(tool),
-    registerCommand: (name, command) => commands.set(name, command),
+    on: (name: string, fn: (...args: any[]) => any) => handlers.set(name, fn),
+    registerTool: (tool: any) => tools.push(tool),
+    registerCommand: (name: string, command: any) => commands.set(name, command),
   } as any);
   const ctx = {
     hasUI: true,
@@ -94,9 +94,9 @@ test("session shutdown terminates an in-flight build and its process group", asy
     JSON.stringify({ arch: "aarch64", distro: "alpine", alpine: { version: "3.23.0" } }),
   );
   process.chdir(dir);
-  const handlers = new Map<string, (...args: never[]) => unknown>();
+  const handlers = new Map<string, (...args: any[]) => any>();
   extension({
-    on: (name, fn) => handlers.set(name, fn),
+    on: (name: string, fn: (...args: any[]) => any) => handlers.set(name, fn),
     registerTool: () => {},
     registerCommand: () => {},
   } as any);
