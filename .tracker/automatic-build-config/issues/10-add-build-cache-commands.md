@@ -9,3 +9,5 @@ Add commands to inspect resolved build inputs and cached images, force a rebuild
 Until this work lands, documentation must state that external input changes do not invalidate the cache and that cached Gondolin image objects may accumulate.
 
 ## Comments
+
+- 2026-09-08: The `echoriad-cli` feature (`.tracker/echoriad-cli/`) realizes this ticket's command work: `build` (with the forced rebuild this ticket anticipated), `images` (list), and `images remove`. One deviation is recorded in the feature spec: Gondolin 0.12.0 exposes no removal API, so `images remove` manipulates the private store layout directly, defended by a layout probe, a hard `echoriad-build-` prefix check, and ref-rescan before object deletion — superseding this ticket's "public APIs only" constraint until Gondolin ships a removal command.

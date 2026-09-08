@@ -19,3 +19,7 @@ _Avoid_: Build config
 **Build approval**:
 A user's authorization for Echoriad to build one identified version of a build config and its local inputs.
 _Avoid_: Project trust, image approval
+
+**Echoriad-built image**:
+A guest image Echoriad produced from a build config, identified by a fingerprint-derived image reference. The only images Echoriad lists or removes; guest images the user created outside Echoriad are never touched.
+_Avoid_: Cached image, owned image
