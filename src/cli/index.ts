@@ -10,7 +10,8 @@
  * project-config loader, and the interactive seams — it may be async,
  * and `main` awaits it before returning the exit code — and reports
  * failure by throwing `CliError`, `CancelledError`, `ConfigError`,
- * `GuestImageError`, or any interactive cancel.
+ * `GuestImageError`, or any interactive cancel. A handler may also
+ * return a process exit code; `void` (or nothing) means 0.
  */
 
 import {
@@ -22,6 +23,7 @@ import {
 } from "../config.ts";
 import { GuestImageError, resolveImageBuildId } from "../guest-image.ts";
 import { approveCommand, resolveApproveDeps } from "./approve.ts";
+import { runBash } from "./bash.ts";
 import { buildCommand } from "./build.ts";
 import { configCommand } from "./config-command.ts";
 import { defaultImagesDeps, type ImagesDeps, runImagesCommand } from "./images.ts";
@@ -59,7 +61,14 @@ export interface CommandContext {
   readonly resolveImage: (imageRef: string) => { buildId: string };
 }
 
-type CommandHandler = (args: string[], ui: Ui, ctx: CommandContext) => void | Promise<void>;
+// `void` marks "may return nothing"; `undefined` would force explicit
+// returns from every handler.
+// biome-ignore lint/suspicious/noConfusingVoidType: intentional void in a return union
+type CommandHandler = (
+  args: string[],
+  ui: Ui,
+  ctx: CommandContext,
+) => number | void | Promise<number | void>;
 
 function buildCommands(deps: CliDeps): Record<string, CommandHandler> {
   return {
@@ -75,6 +84,12 @@ function buildCommands(deps: CliDeps): Record<string, CommandHandler> {
       }),
     images: (args, ui, ctx) =>
       runImagesCommand(args, ui, deps.imagesDeps ?? defaultImagesDeps(ctx.cwd)),
+    bash: (args, ui, ctx) =>
+      runBash(args, ui, {
+        projectRoot: ctx.cwd,
+        loadProjectConfig: ctx.loadProjectConfig,
+        loadSystemConfig: () => ctx.system,
+      }),
   };
 }
 
@@ -158,8 +173,8 @@ export async function main(argv: readonly string[], deps: CliDeps = {}): Promise
     if (command === undefined) throw new CliError("missing command");
     const handler = buildCommands(deps)[command];
     if (!handler) throw new CliError(`unknown command "${command}"`);
-    await handler(args.slice(1), ui, ctx);
-    return 0;
+    const code = await handler(args.slice(1), ui, ctx);
+    return typeof code === "number" ? code : 0;
   } catch (error) {
     if (error instanceof CancelledError) {
       ui.cancelled(error.command);

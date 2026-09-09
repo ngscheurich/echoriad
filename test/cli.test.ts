@@ -275,3 +275,17 @@ test("revoke without prompts fails closed without a terminal", async (t) => {
   assert.match(stderr.output(), /revoke needs an interactive terminal/);
   assert.match(stderr.output(), /revoke --all --yes/);
 });
+
+test("main dispatches bash arguments to the command", async () => {
+  const stderr = captureStream();
+  const exit = await main(["bash", "--foo"], testDeps({ stderr, isInteractive: true }));
+  assert.equal(exit, 1);
+  assert.match(stderr.output(), /bash takes no arguments/);
+});
+
+test("main fails closed for bash without an interactive terminal", async () => {
+  const stderr = captureStream();
+  const exit = await main(["bash"], testDeps({ stderr, isInteractive: false }));
+  assert.equal(exit, 1);
+  assert.match(stderr.output(), /echoriad bash needs an interactive terminal/);
+});
