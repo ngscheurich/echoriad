@@ -8,10 +8,8 @@
  * pipeline itself lives in `guest-image.ts`.
  */
 
-import fs from "node:fs";
-import path from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { resolveImageSelection } from "../config.ts";
+import { resolveImageSelection, resolveImageTarget } from "../config.ts";
 import { prepareGuestImage } from "../guest-image.ts";
 import { deriveBuildIdentity } from "../identity.ts";
 import type { LoadedConfigs } from "../vm-spec.ts";
@@ -49,21 +47,9 @@ export async function resolveImageStartup(
   }
 
   if (selection.kind === "image") {
-    // Precedence: project config > system config > env var. Like Gondolin's
-    // own resolvePathSelector(), an image value that resolves against the
-    // declaring directory to an existing directory is a path; anything else
-    // passes through as a "name:tag"-style selector. There is no dot-prefix
-    // requirement, so a system config can declare "image": "images/base".
-    const image = selection.value;
-    const resolved = path.resolve(selection.baseDir, image);
-    let isDirectory = false;
-    try {
-      isDirectory = fs.statSync(resolved).isDirectory();
-    } catch {
-      isDirectory = false;
-    }
-    if (isDirectory) return { imagePath: resolved, imageLabel: image };
-    return { imagePath: image, imageLabel: image };
+    // Precedence: project config > system config > env var. The path and
+    // selector forms are resolved by the shared image-target resolution.
+    return { imagePath: resolveImageTarget(selection), imageLabel: selection.value };
   }
 
   // A build config is selected: fingerprint it, then reuse an authorized

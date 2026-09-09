@@ -8,6 +8,7 @@ import {
   type ProjectConfig,
   parseConfigFile,
   resolveImageSelection,
+  resolveImageTarget,
 } from "../src/config.ts";
 
 function makeConfigDir(t: { after: (fn: () => void) => void }): {
@@ -235,4 +236,24 @@ test("an unreadable config file fails loudly; a missing one reads as absent", (t
   assert.throws(() => parseConfigFile(configPath, "project config"), /could not read/);
   // A missing file is the intended "no configuration" case.
   assert.deepEqual(parseConfigFile(path.join(dir, "absent.json"), "project config"), {});
+});
+
+test("an image value resolving to a directory is its path, otherwise a selector", (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "echoriad-config-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(dir, "assets"));
+
+  // A base-dir value naming an existing directory resolves to its path.
+  assert.equal(resolveImageTarget({ value: "assets", baseDir: dir }), path.resolve(dir, "assets"));
+  // Relative child paths resolve too.
+  assert.equal(
+    resolveImageTarget({ value: path.join("assets", "..", "assets"), baseDir: dir }),
+    path.resolve(dir, "assets"),
+  );
+  // Anything else passes through unchanged: name:tag selectors, absolute
+  // paths that do not exist, and values that name a regular file.
+  fs.writeFileSync(path.join(dir, "file.txt"), "x");
+  assert.equal(resolveImageTarget({ value: "alpine:latest", baseDir: dir }), "alpine:latest");
+  assert.equal(resolveImageTarget({ value: "/absent/dir", baseDir: dir }), "/absent/dir");
+  assert.equal(resolveImageTarget({ value: "file.txt", baseDir: dir }), "file.txt");
 });

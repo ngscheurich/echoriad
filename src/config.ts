@@ -308,3 +308,21 @@ export function resolveImageSelection(
   }
   return { kind: "default", origin: "built-in default" };
 }
+
+/**
+ * Resolve an image-kind selection to the value the VM consumes: a value
+ * that resolves against the declaring directory to an existing directory
+ * is that directory's path; anything else passes through as a
+ * `name:tag`-style selector, mirroring Gondolin's own path-selector
+ * resolution (without its dot-prefix requirement, so a system config can
+ * declare `"image": "images/base"`).
+ */
+export function resolveImageTarget(selection: { value: string; baseDir: string }): string {
+  const resolved = path.resolve(selection.baseDir, selection.value);
+  try {
+    if (fs.statSync(resolved).isDirectory()) return resolved;
+  } catch {
+    // Not a path-backed selector; fall through unchanged.
+  }
+  return selection.value;
+}
