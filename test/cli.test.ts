@@ -28,34 +28,34 @@ function testDeps(overrides: Record<string, unknown> = {}): Record<string, unkno
   };
 }
 
-test("main reports an unknown command through the error convention", () => {
+test("main reports an unknown command through the error convention", async () => {
   const stderr = captureStream();
-  const exit = main(["frobnicate"], testDeps({ stderr }));
+  const exit = await main(["frobnicate"], testDeps({ stderr }));
   assert.equal(exit, 1);
   assert.equal(stderr.output(), 'error: unknown command "frobnicate"\n');
 });
 
-test("main reports a missing command through the error convention", () => {
+test("main reports a missing command through the error convention", async () => {
   const stderr = captureStream();
-  const exit = main([], testDeps({ stderr }));
+  const exit = await main([], testDeps({ stderr }));
   assert.equal(exit, 1);
   assert.equal(stderr.output(), "error: missing command\n");
 });
 
-test("main rejects unknown global options", () => {
+test("main rejects unknown global options", async () => {
   const stderr = captureStream();
-  const exit = main(["--color", "status"], testDeps({ stderr }));
+  const exit = await main(["--color", "status"], testDeps({ stderr }));
   assert.equal(exit, 1);
   assert.equal(stderr.output(), 'error: unknown option "--color"\n');
 });
 
-test("main reuses ConfigError messages verbatim", () => {
+test("main reuses ConfigError messages verbatim", async () => {
   const stderr = captureStream();
   const configError = new ConfigError(
     "Echoriad: invalid system config (/x/config.json): broken",
     "/x/config.json",
   );
-  const exit = main(
+  const exit = await main(
     ["status"],
     testDeps({
       stderr,
@@ -71,11 +71,18 @@ test("main reuses ConfigError messages verbatim", () => {
   );
 });
 
-test("main accepts the --plain flag before the command", () => {
+test("main accepts the --plain flag before the command", async () => {
   // Flags after the command name belong to the command itself; only
   // --plain is recognized before it.
   const stderr = captureStream();
-  const exit = main(["--plain", "frobnicate"], testDeps({ stderr }));
+  const exit = await main(["--plain", "frobnicate"], testDeps({ stderr }));
   assert.equal(exit, 1);
   assert.equal(stderr.output(), 'error: unknown command "frobnicate"\n');
+});
+
+test("main dispatches to the build command and reports its errors", async () => {
+  const stderr = captureStream();
+  const exit = await main(["build", "--bogus"], testDeps({ stderr }));
+  assert.equal(exit, 1);
+  assert.equal(stderr.output(), 'error: unknown option "--bogus"\n');
 });

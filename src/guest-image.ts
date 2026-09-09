@@ -222,6 +222,8 @@ export type PrepareGuestImageOptions = {
   /** build-config identity for authorization metadata */
   configId: string;
   interactive: boolean;
+  /** rebuild even when a cached image could be reused or adopted */
+  force?: boolean;
   signal?: AbortSignal;
   approve: (action: ApprovalAction, summary: string) => Promise<boolean>;
   onStatus?: (message: string) => void;
@@ -480,13 +482,15 @@ async function prepareImage(options: PrepareGuestImageOptions): Promise<GuestIma
   // association's build ID must also match the image the fingerprint
   // currently resolves to: after a same-fingerprint rebuild the recorded
   // build ID is stale, and a mismatch falls through to the approval
-  // prompt, which re-records the current build ID.
-  if (authorized && cached && authorized.buildId === cached.buildId) {
+  // prompt, which re-records the current build ID. A forced rebuild never
+  // adopts the cache: it overwrites the fingerprint's image reference and
+  // re-records the association with the build ID the rebuild produced.
+  if (!options.force && authorized && cached && authorized.buildId === cached.buildId) {
     options.onStatus?.(`reusing authorized guest image ${fp.abbreviated}`);
     return result(cached, false);
   }
 
-  const action: ApprovalAction = cached ? "reuse" : "build";
+  const action: ApprovalAction = cached && !options.force ? "reuse" : "build";
 
   if (!options.interactive) {
     throw new GuestImageError(
@@ -515,7 +519,7 @@ async function prepareImage(options: PrepareGuestImageOptions): Promise<GuestIma
     );
   }
 
-  if (cached) {
+  if (cached && !options.force) {
     // Approval lets this consumer adopt the globally cached image.
     options.onStatus?.(`reusing cached guest image ${fp.abbreviated}`);
     deps.writeAuthorization({

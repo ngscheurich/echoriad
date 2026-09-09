@@ -55,7 +55,7 @@ function buildConfigDeps(overrides: Partial<StatusDeps> = {}): Partial<StatusDep
   };
 }
 
-test("default selection reports no image selected", () => {
+test("default selection reports no image selected", async () => {
   const result = computeStatus("/proj", undefined, {
     loadProjectConfig: () => ({}),
     loadSystemConfig: () => ({}),
@@ -66,7 +66,7 @@ test("default selection reports no image selected", () => {
   assert.equal(result.fingerprint, undefined);
 });
 
-test("project image selection reports no image selected with origin", () => {
+test("project image selection reports no image selected with origin", async () => {
   const result = computeStatus("/proj", undefined, {
     loadProjectConfig: () => ({}),
     loadSystemConfig: () => ({}),
@@ -83,7 +83,7 @@ test("project image selection reports no image selected with origin", () => {
   assert.equal(result.fingerprint, undefined);
 });
 
-test("env image selection reports no image selected", () => {
+test("env image selection reports no image selected", async () => {
   const result = computeStatus("/proj", "from-env:1", {
     loadProjectConfig: () => ({}),
     loadSystemConfig: () => ({}),
@@ -99,7 +99,7 @@ test("env image selection reports no image selected", () => {
   assert.equal(result.source.value, "from-env:1");
 });
 
-test("buildConfig with no cached image reports needs build", () => {
+test("buildConfig with no cached image reports needs build", async () => {
   const result = computeStatus(
     "/proj",
     undefined,
@@ -117,7 +117,7 @@ test("buildConfig with no cached image reports needs build", () => {
   assert.equal(result.fingerprint?.full, FINGERPRINT);
 });
 
-test("buildConfig with cached image but no association reports needs approval", () => {
+test("buildConfig with cached image but no association reports needs approval", async () => {
   const result = computeStatus(
     "/proj",
     undefined,
@@ -129,7 +129,7 @@ test("buildConfig with cached image but no association reports needs approval", 
   assert.equal(result.verdict, "needs approval");
 });
 
-test("buildConfig with a stale association build id reports needs approval", () => {
+test("buildConfig with a stale association build id reports needs approval", async () => {
   const result = computeStatus(
     "/proj",
     undefined,
@@ -148,7 +148,7 @@ test("buildConfig with a stale association build id reports needs approval", () 
   assert.equal(result.verdict, "needs approval");
 });
 
-test("buildConfig with a matching association reports up to date", () => {
+test("buildConfig with a matching association reports up to date", async () => {
   const result = computeStatus(
     "/proj",
     undefined,
@@ -167,7 +167,7 @@ test("buildConfig with a matching association reports up to date", () => {
   assert.equal(result.verdict, "up to date");
 });
 
-test("a missing build config fails with the pipeline's actionable message", () => {
+test("a missing build config fails with the pipeline's actionable message", async () => {
   assert.throws(
     () =>
       computeStatus(
@@ -188,7 +188,7 @@ test("a missing build config fails with the pipeline's actionable message", () =
   );
 });
 
-test("an unreadable build config reports the read failure, not a missing file", () => {
+test("an unreadable build config reports the read failure, not a missing file", async () => {
   assert.throws(
     () =>
       computeStatus(
@@ -209,7 +209,7 @@ test("an unreadable build config reports the read failure, not a missing file", 
   );
 });
 
-test("a build config rejected by Gondolin fails with the pipeline's message", () => {
+test("a build config rejected by Gondolin fails with the pipeline's message", async () => {
   assert.throws(
     () =>
       computeStatus(
@@ -230,7 +230,7 @@ test("a build config rejected by Gondolin fails with the pipeline's message", ()
   );
 });
 
-test("a fingerprint failure surfaces as a GuestImageError", () => {
+test("a fingerprint failure surfaces as a GuestImageError", async () => {
   assert.throws(
     () =>
       computeStatus(
@@ -264,17 +264,17 @@ function mainDeps(overrides: Record<string, unknown> = {}): Record<string, unkno
   };
 }
 
-test("main runs status and reports the default selection", () => {
+test("main runs status and reports the default selection", async () => {
   const deps = mainDeps();
-  const exit = main(["status"], deps);
+  const exit = await main(["status"], deps);
   assert.equal(exit, 0);
   const stdout = (deps.stdout as CapturedStream).output();
   assert.equal(stdout, "source: default\nverdict: no image selected\n");
 });
 
-test("main runs status --json and carries the complete state", () => {
+test("main runs status --json and carries the complete state", async () => {
   const deps = mainDeps();
-  const exit = main(["status", "--json"], deps);
+  const exit = await main(["status", "--json"], deps);
   assert.equal(exit, 0);
   const parsed = JSON.parse((deps.stdout as CapturedStream).output()) as Record<string, unknown>;
   assert.deepEqual(parsed.source, { kind: "default" });
@@ -282,26 +282,26 @@ test("main runs status --json and carries the complete state", () => {
   assert.equal("fingerprint" in parsed, false);
 });
 
-test("main status reports a project image selector", (t) => {
+test("main status reports a project image selector", async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "echoriad-status-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   fs.writeFileSync(path.join(dir, ".echoriad.json"), JSON.stringify({ image: "my:1" }));
   const deps = mainDeps({ cwd: dir });
-  const exit = main(["status"], deps);
+  const exit = await main(["status"], deps);
   assert.equal(exit, 0);
   const stdout = (deps.stdout as CapturedStream).output();
   assert.equal(stdout, "source: project (my:1)\nverdict: no image selected\n");
 });
 
-test("main status reports an env image selector", () => {
+test("main status reports an env image selector", async () => {
   const deps = mainDeps({ env: { ECHORIAD_IMAGE: "env:1" } });
-  const exit = main(["status"], deps);
+  const exit = await main(["status"], deps);
   assert.equal(exit, 0);
   const stdout = (deps.stdout as CapturedStream).output();
   assert.equal(stdout, "source: env (env:1)\nverdict: no image selected\n");
 });
 
-test("main status reports an invalid project config through the error convention", (t) => {
+test("main status reports an invalid project config through the error convention", async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "echoriad-status-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   fs.writeFileSync(
@@ -309,22 +309,22 @@ test("main status reports an invalid project config through the error convention
     JSON.stringify({ image: "a:1", buildConfig: "b.json" }),
   );
   const deps = mainDeps({ cwd: dir });
-  const exit = main(["status"], deps);
+  const exit = await main(["status"], deps);
   assert.equal(exit, 1);
   const stderr = (deps.stderr as CapturedStream).output();
   assert.match(stderr, /^error: Echoriad: invalid \.echoriad\.json/);
   assert.match(stderr, /defines both/);
 });
 
-test("main status rejects unknown options", () => {
+test("main status rejects unknown options", async () => {
   const deps = mainDeps();
-  const exit = main(["status", "--verbose"], deps);
+  const exit = await main(["status", "--verbose"], deps);
   assert.equal(exit, 1);
   const stderr = (deps.stderr as CapturedStream).output();
   assert.equal(stderr, 'error: unknown option "--verbose" for status\n');
 });
 
-test("main status reports a missing build config through the error convention", (t) => {
+test("main status reports a missing build config through the error convention", async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "echoriad-status-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   fs.writeFileSync(
@@ -332,7 +332,7 @@ test("main status reports a missing build config through the error convention", 
     JSON.stringify({ buildConfig: "missing-build.json" }),
   );
   const deps = mainDeps({ cwd: dir });
-  const exit = main(["status"], deps);
+  const exit = await main(["status"], deps);
   assert.equal(exit, 1);
   const stderr = (deps.stderr as CapturedStream).output();
   assert.match(stderr, /^error: Echoriad: build config .* does not exist/);

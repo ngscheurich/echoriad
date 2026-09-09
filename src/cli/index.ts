@@ -5,8 +5,9 @@
  * resolves plain mode, and routes through the ui seam. Command handlers
  * are added to COMMANDS as their modules land; a handler receives the
  * ui, its remaining args, and a context carrying the project root, the
- * environment, the loaded system config, and the project-config loader.
- * Failure is reported by throwing `CliError`, `CancelledError`,
+ * environment, the loaded system config, and the project-config loader
+ * — it may be async, and `main` awaits it before returning the exit
+ * code — and reports failure by throwing `CliError`, `CancelledError`,
  * `ConfigError`, or `GuestImageError`.
  */
 
@@ -18,6 +19,7 @@ import {
   type SystemConfig,
 } from "../config.ts";
 import { GuestImageError } from "../guest-image.ts";
+import { buildCommand } from "./build.ts";
 import { configCommand } from "./config-command.ts";
 import { statusCommand } from "./status.ts";
 import {
@@ -42,11 +44,21 @@ export interface CommandContext {
   readonly loadProjectConfig: (projectRoot: string) => ProjectConfig;
 }
 
-type CommandHandler = (args: string[], ui: Ui, ctx: CommandContext) => void;
+type CommandHandler = (
+  args: string[],
+  ui: Ui,
+  ctx: CommandContext,
+) => void | Promise<void>;
 
 const COMMANDS: Record<string, CommandHandler> = {
   status: statusCommand,
   config: configCommand,
+  build: (args, ui, ctx) =>
+    buildCommand(args, ui, {
+      cwd: () => ctx.cwd,
+      envImage: () => ctx.env.ECHORIAD_IMAGE,
+      loadSystemConfig: () => ctx.system,
+    }),
 };
 
 /** Injectable seams for `main`; every field defaults to the real thing. */
@@ -60,7 +72,7 @@ export interface CliDeps {
   loadProjectConfig?: (projectRoot: string) => ProjectConfig;
 }
 
-export function main(argv: readonly string[], deps: CliDeps = {}): number {
+export async function main(argv: readonly string[], deps: CliDeps = {}): Promise<number> {
   const stdout = deps.stdout ?? process.stdout;
   const stderr = deps.stderr ?? process.stderr;
   const env = deps.env ?? process.env;
@@ -114,7 +126,7 @@ export function main(argv: readonly string[], deps: CliDeps = {}): number {
     if (command === undefined) throw new CliError("missing command");
     const handler = COMMANDS[command];
     if (!handler) throw new CliError(`unknown command "${command}"`);
-    handler(args.slice(1), ui, {
+    await handler(args.slice(1), ui, {
       cwd,
       env,
       system,

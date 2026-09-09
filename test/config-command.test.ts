@@ -38,9 +38,9 @@ function fieldLine(name: string, output: string): string {
   return line;
 }
 
-test("config shows every field at its built-in default when nothing is set", () => {
+test("config shows every field at its built-in default when nothing is set", async () => {;
   const stdout = captureStream();
-  const exit = main(["config"], testDeps({ stdout }));
+  const exit = await main(["config"], testDeps({ stdout }));
   assert.equal(exit, 0);
   assert.equal(
     stdout.output(),
@@ -52,9 +52,9 @@ test("config shows every field at its built-in default when nothing is set", () 
   );
 });
 
-test("config shows a project buildConfig with its canonical path", () => {
+test("config shows a project buildConfig with its canonical path", async () => {;
   const stdout = captureStream();
-  const exit = main(
+  const exit = await main(
     ["config"],
     testDeps({ stdout, loadProjectConfig: () => ({ buildConfig: "build.json" }) }),
   );
@@ -65,9 +65,9 @@ test("config shows a project buildConfig with its canonical path", () => {
   );
 });
 
-test("config shows a system buildConfig resolved against the system config directory", () => {
+test("config shows a system buildConfig resolved against the system config directory", async () => {;
   const stdout = captureStream();
-  const exit = main(
+  const exit = await main(
     ["config"],
     testDeps({ stdout, loadSystemConfig: () => ({ buildConfig: "build.json" }) }),
   );
@@ -76,9 +76,9 @@ test("config shows a system buildConfig resolved against the system config direc
   assert.equal(fieldLine("image", stdout.output()), `image: buildConfig ${expected} (system)`);
 });
 
-test("config shows a project image selector with its base dir", () => {
+test("config shows a project image selector with its base dir", async () => {;
   const stdout = captureStream();
-  const exit = main(
+  const exit = await main(
     ["config"],
     testDeps({ stdout, loadProjectConfig: () => ({ image: "proj:1" }) }),
   );
@@ -89,9 +89,9 @@ test("config shows a project image selector with its base dir", () => {
   );
 });
 
-test("config shows a system image selector with the system base dir", () => {
+test("config shows a system image selector with the system base dir", async () => {;
   const stdout = captureStream();
-  const exit = main(["config"], testDeps({ stdout, loadSystemConfig: () => ({ image: "sys:1" }) }));
+  const exit = await main(["config"], testDeps({ stdout, loadSystemConfig: () => ({ image: "sys:1" }) }));
   assert.equal(exit, 0);
   assert.equal(
     fieldLine("image", stdout.output()),
@@ -99,9 +99,9 @@ test("config shows a system image selector with the system base dir", () => {
   );
 });
 
-test("config shows an env image selector with its origin", () => {
+test("config shows an env image selector with its origin", async () => {;
   const stdout = captureStream();
-  const exit = main(["config"], testDeps({ stdout, env: { ECHORIAD_IMAGE: "env:1" } }));
+  const exit = await main(["config"], testDeps({ stdout, env: { ECHORIAD_IMAGE: "env:1" } }));
   assert.equal(exit, 0);
   assert.equal(
     fieldLine("image", stdout.output()),
@@ -109,9 +109,9 @@ test("config shows an env image selector with its origin", () => {
   );
 });
 
-test("scalar fields coalesce project over system", () => {
+test("scalar fields coalesce project over system", async () => {;
   const stdout = captureStream();
-  const exit = main(
+  const exit = await main(
     ["config"],
     testDeps({
       stdout,
@@ -125,9 +125,9 @@ test("scalar fields coalesce project over system", () => {
   assert.equal(fieldLine("memory", output), "memory: 2G (system)");
 });
 
-test("object fields render as inline JSON with their origin", () => {
+test("object fields render as inline JSON with their origin", async () => {;
   const stdout = captureStream();
-  const exit = main(
+  const exit = await main(
     ["config"],
     testDeps({
       stdout,
@@ -141,9 +141,9 @@ test("object fields render as inline JSON with their origin", () => {
   assert.equal(fieldLine("mounts", output), 'mounts: {"/data":"/data"} (system)');
 });
 
-test("config --json carries every field with its origin", () => {
+test("config --json carries every field with its origin", async () => {;
   const stdout = captureStream();
-  const exit = main(
+  const exit = await main(
     ["config", "--json"],
     testDeps({
       stdout,
@@ -160,9 +160,9 @@ test("config --json carries every field with its origin", () => {
   assert.deepEqual(parsed.mounts, { value: null, origin: "built-in default" });
 });
 
-test("config --json carries the image selection with kind and canonical path", () => {
+test("config --json carries the image selection with kind and canonical path", async () => {;
   const stdout = captureStream();
-  const exit = main(
+  const exit = await main(
     ["config", "--json"],
     testDeps({ stdout, loadProjectConfig: () => ({ buildConfig: "build.json" }) }),
   );
@@ -175,9 +175,9 @@ test("config --json carries the image selection with kind and canonical path", (
   });
 });
 
-test("config --json carries image selectors with their base dir", () => {
+test("config --json carries image selectors with their base dir", async () => {;
   const stdout = captureStream();
-  const exit = main(
+  const exit = await main(
     ["config", "--json"],
     testDeps({ stdout, loadProjectConfig: () => ({ image: "proj:1" }) }),
   );
@@ -191,10 +191,10 @@ test("config --json carries image selectors with their base dir", () => {
   });
 });
 
-test("an invalid project config errors instead of degrading the resolved view", () => {
+test("an invalid project config errors instead of degrading the resolved view", async () => {;
   const stdout = captureStream();
   const stderr = captureStream();
-  const exit = main(
+  const exit = await main(
     ["config"],
     testDeps({
       stdout,
@@ -215,10 +215,10 @@ test("an invalid project config errors instead of degrading the resolved view", 
   assert.equal(stdout.output(), "");
 });
 
-test("an invalid system config errors before any resolved view prints", () => {
+test("an invalid system config errors before any resolved view prints", async () => {;
   const stdout = captureStream();
   const stderr = captureStream();
-  const exit = main(
+  const exit = await main(
     ["config"],
     testDeps({
       stdout,
@@ -233,21 +233,21 @@ test("an invalid system config errors before any resolved view prints", () => {
   assert.equal(stdout.output(), "");
 });
 
-test("config rejects unknown options and positional arguments", () => {
+test("config rejects unknown options and positional arguments", async () => {;
   const stderr = captureStream();
-  const exit = main(["config", "--frobnicate"], testDeps({ stderr }));
+  const exit = await main(["config", "--frobnicate"], testDeps({ stderr }));
   assert.equal(exit, 1);
   assert.equal(stderr.output(), 'error: unknown option "--frobnicate"\n');
 
   const stderr2 = captureStream();
-  const exit2 = main(["config", "extra"], testDeps({ stderr: stderr2 }));
+  const exit2 = await main(["config", "extra"], testDeps({ stderr: stderr2 }));
   assert.equal(exit2, 1);
   assert.match(stderr2.output(), /config takes no arguments/);
 });
 
-test("config works without a terminal; it never prompts", () => {
+test("config works without a terminal; it never prompts", async () => {;
   const stdout = captureStream();
-  const exit = main(["config"], testDeps({ stdout, isInteractive: false }));
+  const exit = await main(["config"], testDeps({ stdout, isInteractive: false }));
   assert.equal(exit, 0);
   assert.match(stdout.output(), /image: default \(built-in default\)/);
 });

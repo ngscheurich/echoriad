@@ -442,6 +442,43 @@ test("an authorized association reuses a valid image silently", async (t) => {
   assert.equal(written.length, 0);
 });
 
+test("a forced rebuild runs even when an authorized cached image could be reused", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "echoriad-gi-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const configPath = writeBuildConfig(dir, baseConfig());
+  const builtCommands: BuiltCommand[] = [];
+  const refs = new Set<string>([imageRefForFingerprint(FINGERPRINT)]);
+  const approvals: { action: string }[] = [];
+  const { deps, written } = testDeps({
+    builtCommands,
+    existingRefs: refs,
+    authorizations: [matchingAssociation()],
+  });
+  const result = await prepareGuestImage({
+    configPath,
+    projectRoot: "/proj",
+    consumer: "project (/proj)",
+    consumerId: CONSUMER_ID,
+    configId: CONFIG_ID,
+    interactive: true,
+    force: true,
+    approve: async (action) => {
+      approvals.push({ action });
+      return true;
+    },
+    deps,
+  });
+  // The silent-reuse path is skipped: a forced rebuild prompts with the
+  // build action, builds the same fingerprint, and re-records the
+  // association against the build ID the rebuild resolved to.
+  assert.equal(approvals.length, 1);
+  assert.equal(approvals[0]!.action, "build");
+  assert.equal(builtCommands.length, 1);
+  assert.equal(builtCommands[0]!.imageRef, imageRefForFingerprint(FINGERPRINT));
+  assert.equal(result.built, true);
+  assert.deepEqual(written, [matchingAssociation()]);
+});
+
 test("a stale build ID in the association prompts before silent reuse", async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "echoriad-gi-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
