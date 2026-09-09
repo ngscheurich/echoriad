@@ -263,7 +263,7 @@ export function loadSystemConfig(): SystemConfig {
  */
 export type ImageSelection =
   | { kind: "buildConfig"; configPath: string; origin: "project" | "system" }
-  | { kind: "image"; value: string; baseDir: string }
+  | { kind: "image"; value: string; baseDir: string; origin: "project" | "system" | "env" }
   | { kind: "default" };
 
 export function resolveImageSelection(
@@ -282,7 +282,7 @@ export function resolveImageSelection(
     };
   }
   if (project.image) {
-    return { kind: "image", value: project.image, baseDir: projectRoot };
+    return { kind: "image", value: project.image, baseDir: projectRoot, origin: "project" };
   }
   if (typeof system.buildConfig === "string") {
     return {
@@ -292,10 +292,15 @@ export function resolveImageSelection(
     };
   }
   if (system.image) {
-    return { kind: "image", value: system.image, baseDir: path.dirname(systemConfigPath()) };
+    return {
+      kind: "image",
+      value: system.image,
+      baseDir: path.dirname(systemConfigPath()),
+      origin: "system",
+    };
   }
   if (envImage) {
-    return { kind: "image", value: envImage, baseDir: process.cwd() };
+    return { kind: "image", value: envImage, baseDir: process.cwd(), origin: "env" };
   }
   return { kind: "default" };
 }

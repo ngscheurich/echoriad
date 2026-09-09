@@ -10,6 +10,7 @@
 
 import { ConfigError, loadSystemConfig, type SystemConfig } from "../config.ts";
 import { GuestImageError } from "../guest-image.ts";
+import { statusCommand } from "./status.ts";
 import {
   CancelledError,
   CliError,
@@ -20,15 +21,26 @@ import {
   type UiStream,
 } from "./ui.ts";
 
-type CommandHandler = (args: string[], ui: Ui) => void;
+/** Per-invocation context a command runs in; cwd is the project root. */
+export interface CommandContext {
+  readonly cwd: string;
+  readonly env: Record<string, string | undefined>;
+  /** The system-config loader main already resolved; commands reuse it. */
+  readonly loadSystemConfig: () => SystemConfig;
+}
 
-const COMMANDS: Record<string, CommandHandler> = {};
+type CommandHandler = (args: string[], ui: Ui, ctx: CommandContext) => void;
+
+const COMMANDS: Record<string, CommandHandler> = {
+  status: statusCommand,
+};
 
 /** Injectable seams for `main`; every field defaults to the real thing. */
 export interface CliDeps {
   stdout?: UiStream;
   stderr?: UiStream;
   env?: Record<string, string | undefined>;
+  cwd?: string;
   isInteractive?: boolean;
   loadSystemConfig?: () => SystemConfig;
 }
@@ -37,6 +49,7 @@ export function main(argv: readonly string[], deps: CliDeps = {}): number {
   const stdout = deps.stdout ?? process.stdout;
   const stderr = deps.stderr ?? process.stderr;
   const env = deps.env ?? process.env;
+  const cwd = deps.cwd ?? process.cwd();
   const isInteractive = deps.isInteractive ?? Boolean(process.stdin.isTTY && process.stdout.isTTY);
   const loadConfig = deps.loadSystemConfig ?? loadSystemConfig;
 
@@ -84,7 +97,7 @@ export function main(argv: readonly string[], deps: CliDeps = {}): number {
     if (command === undefined) throw new CliError("missing command");
     const handler = COMMANDS[command];
     if (!handler) throw new CliError(`unknown command "${command}"`);
-    handler(args.slice(1), ui);
+    handler(args.slice(1), ui, { cwd, env, loadSystemConfig: loadConfig });
     return 0;
   } catch (error) {
     if (error instanceof CancelledError) {

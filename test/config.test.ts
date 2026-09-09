@@ -49,6 +49,7 @@ test("project image overrides system buildConfig", () => {
     kind: "image",
     value: "proj:1",
     baseDir: "/proj",
+    origin: "project",
   });
 });
 
@@ -58,6 +59,7 @@ test("ECHORIAD_IMAGE fallback applies when no file selects a source", () => {
     kind: "image",
     value: "env:1",
     baseDir: process.cwd(),
+    origin: "env",
   });
 });
 
