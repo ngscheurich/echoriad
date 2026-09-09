@@ -100,6 +100,34 @@ export function discoverGitRepository(startDir: string): GitRepository | undefin
   }
 }
 
+export type ConsumerIdentity = {
+  /** canonical consumer identity for authorization metadata */
+  consumerId: string;
+  /** human-facing consumer label for the approval prompt */
+  consumerLabel: string;
+};
+
+/**
+ * The consumer identity of one project root, without a selected build
+ * config: the canonical common Git directory for Git projects, the
+ * canonical project root otherwise. This is the fallback consumer when
+ * no build config is selected but prior associations still exist.
+ */
+export function deriveConsumerIdentity(projectRoot: string): ConsumerIdentity {
+  const repository = discoverGitRepository(projectRoot);
+  if (repository) {
+    return {
+      consumerId: `git:${repository.commonGitDir}`,
+      consumerLabel: `Git repository (${repository.worktreeRoot})`,
+    };
+  }
+  const root = canonicalize(projectRoot);
+  return {
+    consumerId: `root:${root}`,
+    consumerLabel: `project (${root})`,
+  };
+}
+
 export type BuildIdentity = {
   /** canonical consumer identity for authorization metadata */
   consumerId: string;
@@ -131,16 +159,10 @@ export function deriveBuildIdentity(input: {
   }
 
   const repository = discoverGitRepository(input.projectRoot);
-  const consumerId = repository
-    ? `git:${repository.commonGitDir}`
-    : `root:${canonicalize(input.projectRoot)}`;
-  const consumerLabel = repository
-    ? `Git repository (${repository.worktreeRoot})`
-    : `project (${canonicalize(input.projectRoot)})`;
+  const { consumerId, consumerLabel } = deriveConsumerIdentity(input.projectRoot);
   // A non-Git project root doubles as the repository boundary, so a
   // project-local build config keeps a repository-relative identity.
   const repositoryRoot = repository?.worktreeRoot ?? canonicalize(input.projectRoot);
-
   const configId = isInside(repositoryRoot, configPath)
     ? `repo:${path.relative(repositoryRoot, configPath).split(path.sep).join(path.posix.sep)}`
     : `file:${configPath}`;

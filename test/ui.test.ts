@@ -102,6 +102,21 @@ test("ui.line writes a plain line to stdout", () => {
   assert.equal(stdout.output(), "up to date\n");
 });
 
+test("ui.warn writes the warning convention to stderr", () => {
+  const stderr = captureStream();
+  const ui = createUi({
+    stdout: captureStream(),
+    stderr,
+    plain: false,
+    isInteractive: true,
+  });
+  ui.warn("Echoriad: the image build authorization metadata is malformed");
+  assert.equal(
+    stderr.output(),
+    "warning: Echoriad: the image build authorization metadata is malformed\n",
+  );
+});
+
 test("the non-TTY gate fails closed with the alternative", () => {
   const ui = createUi({
     stdout: captureStream(),

@@ -195,6 +195,83 @@ export function buildApprovalSummary(input: ApprovalSummaryInput): string {
   return lines.join("\n");
 }
 
+export type BuildConfigDeps = {
+  readConfig: (configPath: string) => string;
+  parseConfig: (raw: string, configPath: string) => BuildConfig;
+};
+
+/**
+ * Parse Gondolin build-config text, wrapping schema rejections in a
+ * permanent, actionable GuestImageError.
+ */
+export function parseBuildConfigFile(raw: string, configPath: string): BuildConfig {
+  try {
+    return parseBuildConfig(raw);
+  } catch (error) {
+    throw new GuestImageError(
+      `Echoriad: build config ${configPath} was rejected by Gondolin: ` +
+        `${error instanceof Error ? error.message : String(error)}`,
+      { permanent: true },
+    );
+  }
+}
+
+/**
+ * Load the selected build config: existence and regular-file checks, a
+ * readable-contents check, and a Gondolin schema parse. Errors are
+ * permanent and name the file and the declaring "buildConfig" path.
+ */
+export function loadBuildConfig(configPath: string, deps: BuildConfigDeps): BuildConfig {
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(configPath);
+  } catch {
+    throw new GuestImageError(
+      `Echoriad: build config ${configPath} does not exist; ` +
+        `check the "buildConfig" path in the configuration that declared it`,
+      { permanent: true },
+    );
+  }
+  if (!stat.isFile()) {
+    throw new GuestImageError(
+      `Echoriad: build config ${configPath} is not a regular file; ` +
+        `"buildConfig" must point at a Gondolin build config JSON file`,
+      { permanent: true },
+    );
+  }
+  let raw: string;
+  try {
+    raw = deps.readConfig(configPath);
+  } catch (error) {
+    throw new GuestImageError(
+      `Echoriad: build config ${configPath} could not be read: ` +
+        `${error instanceof Error ? error.message : String(error)}`,
+      { permanent: true },
+    );
+  }
+  return deps.parseConfig(raw, configPath);
+}
+
+/** Load a build config straight from disk with the default reader and parser. */
+export function loadBuildConfigFromDisk(configPath: string): BuildConfig {
+  return loadBuildConfig(configPath, {
+    readConfig: (p) => fs.readFileSync(p, "utf8"),
+    parseConfig: parseBuildConfigFile,
+  });
+}
+
+/**
+ * Resolve a Gondolin image selector to its build ID; a selector that does
+ * not resolve (missing ref or object) throws.
+ */
+export function resolveImageBuildId(selector: string): { buildId: string } {
+  const resolved = resolveImageSelector(selector);
+  if (!resolved.buildId) {
+    throw new Error(`image selector did not resolve to a build id: ${selector}`);
+  }
+  return { buildId: resolved.buildId };
+}
+
 export type GuestImageResult = {
   /** selector to start the VM from (the imported content-derived build ID) */
   imageSelector: string;
@@ -267,25 +344,9 @@ export type GuestImageDeps = {
 function defaultDeps(options: PrepareGuestImageOptions): GuestImageDeps {
   return {
     readConfig: (configPath) => fs.readFileSync(configPath, "utf8"),
-    parseConfig: (raw, configPath) => {
-      try {
-        return parseBuildConfig(raw);
-      } catch (error) {
-        throw new GuestImageError(
-          `Echoriad: build config ${configPath} was rejected by Gondolin: ` +
-            `${error instanceof Error ? error.message : String(error)}`,
-          { permanent: true },
-        );
-      }
-    },
+    parseConfig: parseBuildConfigFile,
     fingerprint: computeBuildFingerprint,
-    resolveImage: (selector) => {
-      const resolved = resolveImageSelector(selector);
-      if (!resolved.buildId) {
-        throw new Error(`image selector did not resolve to a build id: ${selector}`);
-      }
-      return { buildId: resolved.buildId };
-    },
+    resolveImage: resolveImageBuildId,
     build: runGondolinBuild,
     makeOutputDir: () => fs.mkdtempSync(path.join(os.tmpdir(), "echoriad-build-")),
     removeOutputDir: (dir) => fs.rmSync(dir, { recursive: true, force: true }),
@@ -415,34 +476,7 @@ async function prepareImage(options: PrepareGuestImageOptions): Promise<GuestIma
   const deps = { ...defaultDeps(options), ...options.deps };
 
   const { configPath } = options;
-  let stat: fs.Stats;
-  try {
-    stat = fs.statSync(configPath);
-  } catch {
-    throw new GuestImageError(
-      `Echoriad: build config ${configPath} does not exist; ` +
-        `check the "buildConfig" path in the configuration that declared it`,
-      { permanent: true },
-    );
-  }
-  if (!stat.isFile()) {
-    throw new GuestImageError(
-      `Echoriad: build config ${configPath} is not a regular file; ` +
-        `"buildConfig" must point at a Gondolin build config JSON file`,
-      { permanent: true },
-    );
-  }
-  let raw: string;
-  try {
-    raw = deps.readConfig(configPath);
-  } catch (error) {
-    throw new GuestImageError(
-      `Echoriad: build config ${configPath} could not be read: ` +
-        `${error instanceof Error ? error.message : String(error)}`,
-      { permanent: true },
-    );
-  }
-  const config = deps.parseConfig(raw, configPath);
+  const config = loadBuildConfig(configPath, deps);
   const configDir = path.dirname(configPath);
 
   // Echoriad hashes declared local inputs before approval.

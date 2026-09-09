@@ -2,13 +2,15 @@
  * CLI command dispatch.
  *
  * `main` parses argv by hand (global flags, then the command verb),
- * resolves plain mode, and routes through the ui seam. Command handlers
- * are added to COMMANDS as their modules land; a handler receives the
- * ui, its remaining args, and a context carrying the project root, the
- * environment, the loaded system config, and the project-config loader
- * — it may be async, and `main` awaits it before returning the exit
- * code — and reports failure by throwing `CliError`, `CancelledError`,
- * `ConfigError`, or `GuestImageError`.
+ * resolves plain mode, and routes the command with its remaining
+ * arguments, the ui, and a command context through the ui and prompt
+ * seams. Command handlers are added to COMMANDS as their modules land;
+ * a handler receives the ui, its remaining args, and a context carrying
+ * the project root, the environment, the loaded system config, the
+ * project-config loader, and the interactive seams — it may be async,
+ * and `main` awaits it before returning the exit code — and reports
+ * failure by throwing `CliError`, `CancelledError`, `ConfigError`,
+ * `GuestImageError`, or any interactive cancel.
  */
 
 import {
@@ -18,9 +20,12 @@ import {
   type ProjectConfig,
   type SystemConfig,
 } from "../config.ts";
-import { GuestImageError } from "../guest-image.ts";
+import { GuestImageError, resolveImageBuildId } from "../guest-image.ts";
+import { approveCommand, resolveApproveDeps } from "./approve.ts";
 import { buildCommand } from "./build.ts";
 import { configCommand } from "./config-command.ts";
+import { confirmPrompt, type MultiselectInput, multiselectPrompt } from "./prompts.ts";
+import { resolveRevokeDeps, revokeCommand } from "./revoke.ts";
 import { statusCommand } from "./status.ts";
 import {
   CancelledError,
@@ -32,27 +37,34 @@ import {
   type UiStream,
 } from "./ui.ts";
 
-/** The execution context every command handler receives. */
+/** Everything a command handler needs beyond its arguments and the ui. */
 export interface CommandContext {
-  /** the project root: cwd is the project root for every command */
+  /** Project root; cwd is the project root for every command. */
   readonly cwd: string;
-  /** the environment image selection and plain mode read from */
+  /** The environment the command resolves against. */
   readonly env: Record<string, string | undefined>;
-  /** the system config `main` already loaded to resolve plain mode */
+  /** The system config `main` already loaded to resolve plain mode. */
   readonly system: SystemConfig;
-  /** project-config loading, injected for tests */
+  /** Project-config loading, injected for tests. */
   readonly loadProjectConfig: (projectRoot: string) => ProjectConfig;
+  /** Interactive yes/no decision; Ctrl-C becomes the cancel convention. */
+  readonly confirm: (command: string, message: string) => Promise<boolean>;
+  /** Interactive selection; Ctrl-C becomes the cancel convention. */
+  readonly multiselect: <Value extends object>(
+    command: string,
+    input: MultiselectInput<Value>,
+  ) => Promise<Value[]>;
+  /** Resolve a Gondolin image reference to its build ID. */
+  readonly resolveImage: (imageRef: string) => { buildId: string };
 }
 
-type CommandHandler = (
-  args: string[],
-  ui: Ui,
-  ctx: CommandContext,
-) => void | Promise<void>;
+type CommandHandler = (args: string[], ui: Ui, ctx: CommandContext) => void | Promise<void>;
 
 const COMMANDS: Record<string, CommandHandler> = {
   status: statusCommand,
   config: configCommand,
+  approve: (args, ui, ctx) => approveCommand(args, ui, resolveApproveDeps(ctx)),
+  revoke: (args, ui, ctx) => revokeCommand(args, ui, resolveRevokeDeps(ctx)),
   build: (args, ui, ctx) =>
     buildCommand(args, ui, {
       cwd: () => ctx.cwd,
@@ -70,6 +82,9 @@ export interface CliDeps {
   isInteractive?: boolean;
   loadSystemConfig?: () => SystemConfig;
   loadProjectConfig?: (projectRoot: string) => ProjectConfig;
+  confirm?: CommandContext["confirm"];
+  multiselect?: CommandContext["multiselect"];
+  resolveImage?: CommandContext["resolveImage"];
 }
 
 export async function main(argv: readonly string[], deps: CliDeps = {}): Promise<number> {
@@ -122,16 +137,21 @@ export async function main(argv: readonly string[], deps: CliDeps = {}): Promise
     throw error;
   }
 
+  const ctx: CommandContext = {
+    cwd,
+    env,
+    system,
+    loadProjectConfig: loadProject,
+    confirm: deps.confirm ?? confirmPrompt,
+    multiselect: deps.multiselect ?? multiselectPrompt,
+    resolveImage: deps.resolveImage ?? resolveImageBuildId,
+  };
+
   try {
     if (command === undefined) throw new CliError("missing command");
     const handler = COMMANDS[command];
     if (!handler) throw new CliError(`unknown command "${command}"`);
-    await handler(args.slice(1), ui, {
-      cwd,
-      env,
-      system,
-      loadProjectConfig: loadProject,
-    });
+    await handler(args.slice(1), ui, ctx);
     return 0;
   } catch (error) {
     if (error instanceof CancelledError) {

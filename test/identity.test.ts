@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { after, type TestContext, test } from "node:test";
-import { deriveBuildIdentity } from "../src/identity.ts";
+import { deriveBuildIdentity, deriveConsumerIdentity } from "../src/identity.ts";
 
 /**
  * Isolated git environment for tests: a private HOME (git refuses to run
@@ -118,6 +118,22 @@ test("separate clones remain separate consumers", (t) => {
   assert.notEqual(a.consumerId, b.consumerId);
   // Same relative config path, but each clone authorizes independently.
   assert.equal(a.configId, b.configId);
+});
+
+test("deriveConsumerIdentity identifies a Git project by its common git directory", (t) => {
+  const repo = makeRepo(t);
+  const identity = deriveConsumerIdentity(repo);
+  const commonGitDir = fs.realpathSync(path.join(fs.realpathSync(repo), ".git"));
+  assert.equal(identity.consumerId, `git:${commonGitDir}`);
+  assert.match(identity.consumerLabel, /Git repository/);
+});
+
+test("deriveConsumerIdentity identifies a non-Git project by its canonical root", (t) => {
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), "echoriad-auth-proj-"));
+  t.after(() => fs.rmSync(project, { recursive: true, force: true }));
+  const identity = deriveConsumerIdentity(project);
+  assert.equal(identity.consumerId, `root:${fs.realpathSync(project)}`);
+  assert.match(identity.consumerLabel, /project/);
 });
 
 test("a non-Git project's consumer identity is its canonical project root", (t) => {

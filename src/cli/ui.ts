@@ -4,8 +4,9 @@
  * Every command writes through a `Ui` instance; nothing else in `src/cli/`
  * touches the process streams. The instance decides how output degrades:
  * plain mode drops interactive framing, errors print as `error: <message>`
- * on stderr with exit 1, and a cancelled prompt prints `cancelled:
- * <command>`, distinct from a denial.
+ * on stderr with exit 1, a cancelled prompt prints `cancelled:
+ * <command>`, distinct from a denial, and warnings print as `warning:
+ * <message>` on stderr without failing.
  *
  * There is no color in this release: verdict and severity words carry the
  * meaning on their own, so plain mode changes framing only, never content.
@@ -61,6 +62,11 @@ export function formatCancel(command: string): string {
   return `cancelled: ${command}\n`;
 }
 
+/** The warning convention's line format; warnings are not failures. */
+export function formatWarning(message: string): string {
+  return `warning: ${message}\n`;
+}
+
 /** Signals that the user aborted an interactive prompt (Ctrl+C at clack).
  * The command name lands in the `cancelled: <command>` line, which is a
  * deliberate exit — not a denial of what was asked.
@@ -84,6 +90,8 @@ export interface Ui {
   line(text: string): void;
   /** The error convention: `error: <message>` on stderr, exit 1. */
   error(message: string): void;
+  /** The warning convention: `warning: <message>` on stderr, not a failure. */
+  warn(message: string): void;
   /** The cancel convention: `cancelled: <command>` on stderr, exit 1. */
   cancelled(command: string): void;
   /**
@@ -110,6 +118,9 @@ export function createUi(options: UiOptions): Ui {
     },
     error: (message) => {
       options.stderr.write(formatError(message));
+    },
+    warn: (message) => {
+      options.stderr.write(formatWarning(message));
     },
     cancelled: (command) => {
       options.stderr.write(formatCancel(command));
