@@ -120,6 +120,21 @@ export type ApprovalSummaryInput = {
 };
 
 /**
+ * Canonicalize a path for display: the real path when it exists, otherwise
+ * the best absolute resolution. The approval summary's consumer label already
+ * carries canonical paths (identity.ts), so the remaining lines must match
+ * or one dialog would show the same directory two ways on symlinked roots
+ * (for example macOS temp directories).
+ */
+function canonicalizePath(target: string): string {
+  try {
+    return fs.realpathSync(target);
+  } catch {
+    return path.resolve(target);
+  }
+}
+
+/**
  * Human-facing approval prompt body. Shows the consumer and project root,
  * the canonical build-config path, all resolved local input paths
  * (highlighting paths outside the project), postBuild commands verbatim,
@@ -128,6 +143,9 @@ export type ApprovalSummaryInput = {
  * are separated as one paragraph by a blank line.
  */
 export function buildApprovalSummary(input: ApprovalSummaryInput): string {
+  const projectRoot = canonicalizePath(input.projectRoot);
+  const configPath = canonicalizePath(input.configPath);
+  const localInputPaths = input.localInputPaths.map(canonicalizePath);
   const lines: string[] = [];
   lines.push(
     input.action === "build"
@@ -135,13 +153,13 @@ export function buildApprovalSummary(input: ApprovalSummaryInput): string {
       : "Action: reuse the globally cached image built from this build config",
   );
   lines.push(`Consumer: ${input.consumer}`);
-  lines.push(`Project root: ${input.projectRoot}`);
-  lines.push(`Build config: ${input.configPath}`);
+  lines.push(`Project root: ${projectRoot}`);
+  lines.push(`Build config: ${configPath}`);
 
-  if (input.localInputPaths.length > 0) {
+  if (localInputPaths.length > 0) {
     lines.push("Local inputs:");
-    for (const inputPath of input.localInputPaths) {
-      const outside = path.relative(input.projectRoot, inputPath).startsWith("..")
+    for (const inputPath of localInputPaths) {
+      const outside = path.relative(projectRoot, inputPath).startsWith("..")
         ? " (outside project)"
         : "";
       lines.push(`  - ${inputPath}${outside}`);

@@ -169,6 +169,12 @@ function scratchProject(config?: object) {
     image: process.env.ECHORIAD_IMAGE,
   };
   delete process.env.ECHORIAD_IMAGE;
+  // Isolate the environment: runBash resolves the guest image through the
+  // real config pipeline, which must not see the developer's system
+  // config or authorization cache. The pointed-at directories need not
+  // exist; missing files read as absent.
+  process.env.XDG_CACHE_HOME = path.join(dir, "cache");
+  process.env.XDG_CONFIG_HOME = path.join(dir, "config");
   process.chdir(dir);
   return {
     dir,

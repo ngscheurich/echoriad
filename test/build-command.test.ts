@@ -287,7 +287,10 @@ test("a system-selected build config runs with the system consumer identity", as
   assert.equal(options.configPath, configPath);
   assert.equal(options.consumerId, "system");
   assert.equal(options.consumer, "system configuration");
-  assert.equal(options.configId, `file:${configPath}`);
+  // A system-selected config is identified by its canonical path, which
+  // differs from the temp-dir path when the OS symlinks its temp root
+  // (macOS /var/folders -> /private/var/folders).
+  assert.equal(options.configId, `file:${fs.realpathSync(configPath)}`);
   assert.equal(stdout(), "up to date\n");
 });
 
