@@ -2,3 +2,4 @@ node_modules/
 /.gondolin/
 /.scratch/
 /.tmp/
+/.worktrees/
