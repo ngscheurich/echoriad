@@ -38,7 +38,7 @@ function fieldLine(name: string, output: string): string {
   return line;
 }
 
-test("config shows every field at its built-in default when nothing is set", async () => {;
+test("config shows every field at its built-in default when nothing is set", async () => {
   const stdout = captureStream();
   const exit = await main(["config"], testDeps({ stdout }));
   assert.equal(exit, 0);
@@ -52,7 +52,7 @@ test("config shows every field at its built-in default when nothing is set", asy
   );
 });
 
-test("config shows a project buildConfig with its canonical path", async () => {;
+test("config shows a project buildConfig with its canonical path", async () => {
   const stdout = captureStream();
   const exit = await main(
     ["config"],
@@ -65,7 +65,7 @@ test("config shows a project buildConfig with its canonical path", async () => {
   );
 });
 
-test("config shows a system buildConfig resolved against the system config directory", async () => {;
+test("config shows a system buildConfig resolved against the system config directory", async () => {
   const stdout = captureStream();
   const exit = await main(
     ["config"],
@@ -76,7 +76,7 @@ test("config shows a system buildConfig resolved against the system config direc
   assert.equal(fieldLine("image", stdout.output()), `image: buildConfig ${expected} (system)`);
 });
 
-test("config shows a project image selector with its base dir", async () => {;
+test("config shows a project image selector with its base dir", async () => {
   const stdout = captureStream();
   const exit = await main(
     ["config"],
@@ -89,9 +89,12 @@ test("config shows a project image selector with its base dir", async () => {;
   );
 });
 
-test("config shows a system image selector with the system base dir", async () => {;
+test("config shows a system image selector with the system base dir", async () => {
   const stdout = captureStream();
-  const exit = await main(["config"], testDeps({ stdout, loadSystemConfig: () => ({ image: "sys:1" }) }));
+  const exit = await main(
+    ["config"],
+    testDeps({ stdout, loadSystemConfig: () => ({ image: "sys:1" }) }),
+  );
   assert.equal(exit, 0);
   assert.equal(
     fieldLine("image", stdout.output()),
@@ -99,7 +102,7 @@ test("config shows a system image selector with the system base dir", async () =
   );
 });
 
-test("config shows an env image selector with its origin", async () => {;
+test("config shows an env image selector with its origin", async () => {
   const stdout = captureStream();
   const exit = await main(["config"], testDeps({ stdout, env: { ECHORIAD_IMAGE: "env:1" } }));
   assert.equal(exit, 0);
@@ -109,7 +112,7 @@ test("config shows an env image selector with its origin", async () => {;
   );
 });
 
-test("scalar fields coalesce project over system", async () => {;
+test("scalar fields coalesce project over system", async () => {
   const stdout = captureStream();
   const exit = await main(
     ["config"],
@@ -125,7 +128,7 @@ test("scalar fields coalesce project over system", async () => {;
   assert.equal(fieldLine("memory", output), "memory: 2G (system)");
 });
 
-test("object fields render as inline JSON with their origin", async () => {;
+test("object fields render as inline JSON with their origin", async () => {
   const stdout = captureStream();
   const exit = await main(
     ["config"],
@@ -141,7 +144,7 @@ test("object fields render as inline JSON with their origin", async () => {;
   assert.equal(fieldLine("mounts", output), 'mounts: {"/data":"/data"} (system)');
 });
 
-test("config --json carries every field with its origin", async () => {;
+test("config --json carries every field with its origin", async () => {
   const stdout = captureStream();
   const exit = await main(
     ["config", "--json"],
@@ -160,7 +163,7 @@ test("config --json carries every field with its origin", async () => {;
   assert.deepEqual(parsed.mounts, { value: null, origin: "built-in default" });
 });
 
-test("config --json carries the image selection with kind and canonical path", async () => {;
+test("config --json carries the image selection with kind and canonical path", async () => {
   const stdout = captureStream();
   const exit = await main(
     ["config", "--json"],
@@ -175,7 +178,7 @@ test("config --json carries the image selection with kind and canonical path", a
   });
 });
 
-test("config --json carries image selectors with their base dir", async () => {;
+test("config --json carries image selectors with their base dir", async () => {
   const stdout = captureStream();
   const exit = await main(
     ["config", "--json"],
@@ -191,7 +194,7 @@ test("config --json carries image selectors with their base dir", async () => {;
   });
 });
 
-test("an invalid project config errors instead of degrading the resolved view", async () => {;
+test("an invalid project config errors instead of degrading the resolved view", async () => {
   const stdout = captureStream();
   const stderr = captureStream();
   const exit = await main(
@@ -215,7 +218,7 @@ test("an invalid project config errors instead of degrading the resolved view", 
   assert.equal(stdout.output(), "");
 });
 
-test("an invalid system config errors before any resolved view prints", async () => {;
+test("an invalid system config errors before any resolved view prints", async () => {
   const stdout = captureStream();
   const stderr = captureStream();
   const exit = await main(
@@ -233,7 +236,7 @@ test("an invalid system config errors before any resolved view prints", async ()
   assert.equal(stdout.output(), "");
 });
 
-test("config rejects unknown options and positional arguments", async () => {;
+test("config rejects unknown options and positional arguments", async () => {
   const stderr = captureStream();
   const exit = await main(["config", "--frobnicate"], testDeps({ stderr }));
   assert.equal(exit, 1);
@@ -245,7 +248,7 @@ test("config rejects unknown options and positional arguments", async () => {;
   assert.match(stderr2.output(), /config takes no arguments/);
 });
 
-test("config works without a terminal; it never prompts", async () => {;
+test("config works without a terminal; it never prompts", async () => {
   const stdout = captureStream();
   const exit = await main(["config"], testDeps({ stdout, isInteractive: false }));
   assert.equal(exit, 0);

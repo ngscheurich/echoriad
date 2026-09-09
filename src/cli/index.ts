@@ -63,11 +63,11 @@ export interface CommandContext {
 
 // `void` marks "may return nothing"; `undefined` would force explicit
 // returns from every handler.
-// biome-ignore lint/suspicious/noConfusingVoidType: intentional void in a return union
 type CommandHandler = (
   args: string[],
   ui: Ui,
   ctx: CommandContext,
+  // biome-ignore lint/suspicious/noConfusingVoidType: intentional void in a return union
 ) => number | void | Promise<number | void>;
 
 function buildCommands(deps: CliDeps): Record<string, CommandHandler> {

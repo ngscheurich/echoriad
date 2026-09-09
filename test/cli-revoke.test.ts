@@ -9,10 +9,10 @@ import {
   saveAssociations,
 } from "../src/authorization.ts";
 import type { CommandContext } from "../src/cli/index.ts";
-import { loadProjectConfig } from "../src/config.ts";
 import type { MultiselectInput } from "../src/cli/prompts.ts";
 import { type RevokeDeps, resolveRevokeDeps, revokeCommand } from "../src/cli/revoke.ts";
 import { CancelledError, CliError, createUi, type UiStream } from "../src/cli/ui.ts";
+import { loadProjectConfig } from "../src/config.ts";
 
 interface CapturedStream extends UiStream {
   output(): string;
