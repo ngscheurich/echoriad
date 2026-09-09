@@ -59,7 +59,7 @@ test("default selection reports no image selected", () => {
   const result = computeStatus("/proj", undefined, {
     loadProjectConfig: () => ({}),
     loadSystemConfig: () => ({}),
-    resolveImageSelection: () => ({ kind: "default" }),
+    resolveImageSelection: () => ({ kind: "default", origin: "built-in default" }),
   });
   assert.equal(result.verdict, "no image selected");
   assert.equal(result.source.kind, "default");

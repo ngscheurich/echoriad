@@ -3,13 +3,22 @@
  *
  * `main` parses argv by hand (global flags, then the command verb),
  * resolves plain mode, and routes through the ui seam. Command handlers
- * are added to COMMANDS as their modules land; a handler receives the ui
- * and its remaining args, and reports failure by throwing `CliError`,
- * `CancelledError`, `ConfigError`, or `GuestImageError`.
+ * are added to COMMANDS as their modules land; a handler receives the
+ * ui, its remaining args, and a context carrying the project root, the
+ * environment, the loaded system config, and the project-config loader.
+ * Failure is reported by throwing `CliError`, `CancelledError`,
+ * `ConfigError`, or `GuestImageError`.
  */
 
-import { ConfigError, loadSystemConfig, type SystemConfig } from "../config.ts";
+import {
+  ConfigError,
+  loadProjectConfig,
+  loadSystemConfig,
+  type ProjectConfig,
+  type SystemConfig,
+} from "../config.ts";
 import { GuestImageError } from "../guest-image.ts";
+import { configCommand } from "./config-command.ts";
 import { statusCommand } from "./status.ts";
 import {
   CancelledError,
@@ -21,18 +30,23 @@ import {
   type UiStream,
 } from "./ui.ts";
 
-/** Per-invocation context a command runs in; cwd is the project root. */
+/** The execution context every command handler receives. */
 export interface CommandContext {
+  /** the project root: cwd is the project root for every command */
   readonly cwd: string;
+  /** the environment image selection and plain mode read from */
   readonly env: Record<string, string | undefined>;
-  /** The system-config loader main already resolved; commands reuse it. */
-  readonly loadSystemConfig: () => SystemConfig;
+  /** the system config `main` already loaded to resolve plain mode */
+  readonly system: SystemConfig;
+  /** project-config loading, injected for tests */
+  readonly loadProjectConfig: (projectRoot: string) => ProjectConfig;
 }
 
 type CommandHandler = (args: string[], ui: Ui, ctx: CommandContext) => void;
 
 const COMMANDS: Record<string, CommandHandler> = {
   status: statusCommand,
+  config: configCommand,
 };
 
 /** Injectable seams for `main`; every field defaults to the real thing. */
@@ -43,6 +57,7 @@ export interface CliDeps {
   cwd?: string;
   isInteractive?: boolean;
   loadSystemConfig?: () => SystemConfig;
+  loadProjectConfig?: (projectRoot: string) => ProjectConfig;
 }
 
 export function main(argv: readonly string[], deps: CliDeps = {}): number {
@@ -52,6 +67,7 @@ export function main(argv: readonly string[], deps: CliDeps = {}): number {
   const cwd = deps.cwd ?? process.cwd();
   const isInteractive = deps.isInteractive ?? Boolean(process.stdin.isTTY && process.stdout.isTTY);
   const loadConfig = deps.loadSystemConfig ?? loadSystemConfig;
+  const loadProject = deps.loadProjectConfig ?? loadProjectConfig;
 
   let plainFlag = false;
   let index = 0;
@@ -71,8 +87,9 @@ export function main(argv: readonly string[], deps: CliDeps = {}): number {
   const command = args[0];
 
   let ui: Ui;
+  let system: SystemConfig;
   try {
-    const system = loadConfig();
+    system = loadConfig();
     ui = createUi({
       stdout,
       stderr,
@@ -97,7 +114,12 @@ export function main(argv: readonly string[], deps: CliDeps = {}): number {
     if (command === undefined) throw new CliError("missing command");
     const handler = COMMANDS[command];
     if (!handler) throw new CliError(`unknown command "${command}"`);
-    handler(args.slice(1), ui, { cwd, env, loadSystemConfig: loadConfig });
+    handler(args.slice(1), ui, {
+      cwd,
+      env,
+      system,
+      loadProjectConfig: loadProject,
+    });
     return 0;
   } catch (error) {
     if (error instanceof CancelledError) {

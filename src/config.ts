@@ -255,6 +255,10 @@ export function loadSystemConfig(): SystemConfig {
 /**
  * The selected guest image source, after applying selector precedence.
  *
+ * Every variant records the layer it was selected from, so a resolved
+ * view can attribute the selection to project, system, env, or the
+ * built-in default.
+ *
  * `buildConfig` paths resolve against the directory of the configuration
  * that declared them. An `image` value resolves against the declaring
  * directory too (`process.cwd()` for the env var) when that joined path
@@ -264,7 +268,7 @@ export function loadSystemConfig(): SystemConfig {
 export type ImageSelection =
   | { kind: "buildConfig"; configPath: string; origin: "project" | "system" }
   | { kind: "image"; value: string; baseDir: string; origin: "project" | "system" | "env" }
-  | { kind: "default" };
+  | { kind: "default"; origin: "built-in default" };
 
 export function resolveImageSelection(
   project: ProjectConfig,
@@ -302,5 +306,5 @@ export function resolveImageSelection(
   if (envImage) {
     return { kind: "image", value: envImage, baseDir: process.cwd(), origin: "env" };
   }
-  return { kind: "default" };
+  return { kind: "default", origin: "built-in default" };
 }

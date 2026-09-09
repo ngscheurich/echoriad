@@ -212,7 +212,7 @@ export function statusCommand(args: string[], ui: Ui, ctx: CommandContext): void
     throw new CliError(`unknown option "${unknown[0]}" for status`);
   }
   const result = computeStatus(ctx.cwd, ctx.env.ECHORIAD_IMAGE, {
-    loadSystemConfig: ctx.loadSystemConfig,
+    loadSystemConfig: () => ctx.system,
   });
 
   if (args.includes("--json")) {
