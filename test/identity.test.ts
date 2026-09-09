@@ -42,6 +42,22 @@ function makeRepo(t: TestContext): string {
   return dir;
 }
 
+test("deriveConsumerIdentity carries the consumer half of build identity", (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "echoriad-auth-root-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(dir, "build-config.json"), "{}");
+
+  const consumer = deriveConsumerIdentity(dir);
+  const identity = deriveBuildIdentity({
+    origin: "project",
+    projectRoot: dir,
+    configPath: path.join(dir, "build-config.json"),
+  });
+  assert.equal(consumer.consumerId, identity.consumerId);
+  assert.equal(consumer.consumerLabel, identity.consumerLabel);
+  assert.equal(consumer.consumerId, `root:${fs.realpathSync(dir)}`);
+});
+
 test("a Git project's consumer identity is the canonical common git directory", (t) => {
   const repo = makeRepo(t);
   fs.writeFileSync(path.join(repo, "build-config.json"), "{}");

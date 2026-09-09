@@ -52,9 +52,12 @@ export function resolveGondolinCli(): { cliPath: string; version: string } {
   return cachedCli;
 }
 
+/** The name prefix Echoriad gives fingerprint-derived image references. */
+export const ECHORIAD_BUILD_IMAGE_PREFIX = "echoriad-build-";
+
 /** Internal Gondolin image reference derived from a build fingerprint. */
 export function imageRefForFingerprint(fingerprint: string): string {
-  return `echoriad-build-${fingerprint}:latest`;
+  return `${ECHORIAD_BUILD_IMAGE_PREFIX}${fingerprint}:latest`;
 }
 
 export type BuildCommandInput = {

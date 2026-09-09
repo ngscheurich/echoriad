@@ -24,6 +24,7 @@ import { GuestImageError, resolveImageBuildId } from "../guest-image.ts";
 import { approveCommand, resolveApproveDeps } from "./approve.ts";
 import { buildCommand } from "./build.ts";
 import { configCommand } from "./config-command.ts";
+import { defaultImagesDeps, type ImagesDeps, runImagesCommand } from "./images.ts";
 import { confirmPrompt, type MultiselectInput, multiselectPrompt } from "./prompts.ts";
 import { resolveRevokeDeps, revokeCommand } from "./revoke.ts";
 import { statusCommand } from "./status.ts";
@@ -60,18 +61,22 @@ export interface CommandContext {
 
 type CommandHandler = (args: string[], ui: Ui, ctx: CommandContext) => void | Promise<void>;
 
-const COMMANDS: Record<string, CommandHandler> = {
-  status: statusCommand,
-  config: configCommand,
-  approve: (args, ui, ctx) => approveCommand(args, ui, resolveApproveDeps(ctx)),
-  revoke: (args, ui, ctx) => revokeCommand(args, ui, resolveRevokeDeps(ctx)),
-  build: (args, ui, ctx) =>
-    buildCommand(args, ui, {
-      cwd: () => ctx.cwd,
-      envImage: () => ctx.env.ECHORIAD_IMAGE,
-      loadSystemConfig: () => ctx.system,
-    }),
-};
+function buildCommands(deps: CliDeps): Record<string, CommandHandler> {
+  return {
+    status: statusCommand,
+    config: configCommand,
+    approve: (args, ui, ctx) => approveCommand(args, ui, resolveApproveDeps(ctx)),
+    revoke: (args, ui, ctx) => revokeCommand(args, ui, resolveRevokeDeps(ctx)),
+    build: (args, ui, ctx) =>
+      buildCommand(args, ui, {
+        cwd: () => ctx.cwd,
+        envImage: () => ctx.env.ECHORIAD_IMAGE,
+        loadSystemConfig: () => ctx.system,
+      }),
+    images: (args, ui, ctx) =>
+      runImagesCommand(args, ui, deps.imagesDeps ?? defaultImagesDeps(ctx.cwd)),
+  };
+}
 
 /** Injectable seams for `main`; every field defaults to the real thing. */
 export interface CliDeps {
@@ -85,6 +90,8 @@ export interface CliDeps {
   confirm?: CommandContext["confirm"];
   multiselect?: CommandContext["multiselect"];
   resolveImage?: CommandContext["resolveImage"];
+  /** deps for the images command; defaults read live Gondolin state */
+  imagesDeps?: ImagesDeps;
 }
 
 export async function main(argv: readonly string[], deps: CliDeps = {}): Promise<number> {
@@ -149,7 +156,7 @@ export async function main(argv: readonly string[], deps: CliDeps = {}): Promise
 
   try {
     if (command === undefined) throw new CliError("missing command");
-    const handler = COMMANDS[command];
+    const handler = buildCommands(deps)[command];
     if (!handler) throw new CliError(`unknown command "${command}"`);
     await handler(args.slice(1), ui, ctx);
     return 0;

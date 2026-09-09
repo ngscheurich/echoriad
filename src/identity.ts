@@ -107,35 +107,31 @@ export type ConsumerIdentity = {
   consumerLabel: string;
 };
 
-/**
- * The consumer identity of one project root, without a selected build
- * config: the canonical common Git directory for Git projects, the
- * canonical project root otherwise. This is the fallback consumer when
- * no build config is selected but prior associations still exist.
- */
-export function deriveConsumerIdentity(projectRoot: string): ConsumerIdentity {
-  const repository = discoverGitRepository(projectRoot);
-  if (repository) {
-    return {
-      consumerId: `git:${repository.commonGitDir}`,
-      consumerLabel: `Git repository (${repository.worktreeRoot})`,
-    };
-  }
-  const root = canonicalize(projectRoot);
-  return {
-    consumerId: `root:${root}`,
-    consumerLabel: `project (${root})`,
-  };
-}
-
-export type BuildIdentity = {
-  /** canonical consumer identity for authorization metadata */
-  consumerId: string;
-  /** human-facing consumer label for the approval prompt */
-  consumerLabel: string;
+export type BuildIdentity = ConsumerIdentity & {
   /** build-config identity for authorization metadata */
   configId: string;
 };
+
+function consumerOf(repository: GitRepository | undefined, projectRoot: string): ConsumerIdentity {
+  return repository
+    ? {
+        consumerId: `git:${repository.commonGitDir}`,
+        consumerLabel: `Git repository (${repository.worktreeRoot})`,
+      }
+    : {
+        consumerId: `root:${canonicalize(projectRoot)}`,
+        consumerLabel: `project (${canonicalize(projectRoot)})`,
+      };
+}
+
+/**
+ * Derive the consumer identity for a project root, per the identity rules
+ * in the module docstring. Commands without a selected build config (the
+ * image listing, for example) use this directly.
+ */
+export function deriveConsumerIdentity(projectRoot: string): ConsumerIdentity {
+  return consumerOf(discoverGitRepository(projectRoot), projectRoot);
+}
 
 /**
  * Derive the consumer and build-config identity for one selected build
@@ -159,7 +155,7 @@ export function deriveBuildIdentity(input: {
   }
 
   const repository = discoverGitRepository(input.projectRoot);
-  const { consumerId, consumerLabel } = deriveConsumerIdentity(input.projectRoot);
+  const { consumerId, consumerLabel } = consumerOf(repository, input.projectRoot);
   // A non-Git project root doubles as the repository boundary, so a
   // project-local build config keeps a repository-relative identity.
   const repositoryRoot = repository?.worktreeRoot ?? canonicalize(input.projectRoot);
